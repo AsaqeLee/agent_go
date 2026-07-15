@@ -35,3 +35,6 @@ Thumbs.db
 # Debug
 debug
 __debug_bin*
+
+# Playwright MCP local artifacts
+.playwright-mcp/
