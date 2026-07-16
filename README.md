@@ -14,6 +14,7 @@
 ## 特性
 
 - **完整 Agent Loop**：`LLM → tool_calls → 执行 → 回写 → 再 LLM`
+- **多轮会话**：`Agent` 跨 `Run` 保留历史；`Reset` / CLI `/new` 开新会话
 - **OpenAI 兼容**：官方 API / Ollama / DeepSeek / 任意 `/v1/chat/completions`
 - **零第三方依赖**：仅 `net/http` + 标准库
 - **教学用内置工具**：`get_time` · `calculator` · `echo_note`
@@ -54,7 +55,7 @@ export OPENAI_MODEL=gpt-4o-mini   # 可选
 go run ./cmd/agent "现在几点？请用工具查"
 go run ./cmd/agent "帮我算 123 * 456"
 
-# 交互模式
+# 交互模式（多轮会话；/new 清空，/history 查看）
 go run ./cmd/agent
 
 # 编译二进制

@@ -22,17 +22,22 @@ This repository implements the second shape with three packages:
 ## Loop (pseudocode)
 
 ```
-messages = [system, user]
+# Multi-turn: history lives on Agent across Run() calls.
+messages = copy(history) or [system]
+messages.append(user)
 for turn in 1..MaxTurns:
     reply = LLM.Chat(messages, tools)
     messages.append(reply)
     if reply has no tool_calls:
+        history = messages   # commit only on success
         return reply.content
     for each call in reply.tool_calls:
         result = tools.Execute(call)
         messages.append(tool message with call id)
-return error: max turns exceeded
+return error: max turns exceeded   # history unchanged
 ```
+
+`Agent.Reset()` clears history for a new session. CLI: `/new`, `/history`.
 
 ## Message roles
 

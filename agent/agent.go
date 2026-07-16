@@ -4,6 +4,9 @@
 //	until the model returns plain text or MaxTurns is hit.
 //
 // That loop is the essential difference between a one-shot chat completion and an agent.
+//
+// Conversation history is kept on the Agent across Run calls (multi-turn). Use Reset
+// to start a fresh session.
 package agent
 
 import (
@@ -17,7 +20,7 @@ import (
 	"github.com/asaqelee/agent_go/tool"
 )
 
-// Agent holds the model, tools, system prompt, and loop limits.
+// Agent holds the model, tools, system prompt, loop limits, and session history.
 type Agent struct {
 	Provider     llm.Provider
 	Tools        []tool.Tool
@@ -27,9 +30,14 @@ type Agent struct {
 	Verbose bool
 	// Log is the optional verbose sink; defaults to os.Stderr when Verbose is true.
 	Log io.Writer
+
+	// history is short-term memory across Run calls (system + user/assistant/tool turns).
+	// Only updated when a Run finishes successfully.
+	history []llm.Message
 }
 
-// Run executes the full agent loop for one user input and returns the final text answer.
+// Run executes the agent loop for one user input and returns the final text answer.
+// Prior successful turns stay in the agent; this call appends the new user message.
 func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	if a.Provider == nil {
 		return "", fmt.Errorf("agent: provider is nil")
@@ -37,22 +45,21 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if strings.TrimSpace(userInput) == "" {
+		return "", fmt.Errorf("agent: empty input")
+	}
 
 	maxTurns := a.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = 8
 	}
 
-	system := a.SystemPrompt
-	if system == "" {
-		system = defaultSystemPrompt()
-	}
-
-	// messages is growing short-term memory for this run.
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: system},
-		{Role: llm.RoleUser, Content: userInput},
-	}
+	// Work on a copy so failed runs do not corrupt the session.
+	messages := a.sessionMessages()
+	messages = append(messages, llm.Message{
+		Role:    llm.RoleUser,
+		Content: userInput,
+	})
 
 	registry := tool.NewRegistry(a.Tools)
 	toolDefs := tool.Defs(a.Tools)
@@ -74,8 +81,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		assistant := resp.Message
 		messages = append(messages, assistant)
 
-		// Case A: no tools → done.
+		// Case A: no tools → done; commit history.
 		if len(assistant.ToolCalls) == 0 {
+			a.history = messages
 			a.log("final: %s", assistant.Content)
 			return strings.TrimSpace(assistant.Content), nil
 		}
@@ -97,6 +105,37 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	return "", fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
+}
+
+// Reset clears conversation history. The next Run starts a new session (new system prompt).
+func (a *Agent) Reset() {
+	a.history = nil
+}
+
+// History returns a copy of the current session messages (for debugging / learning).
+func (a *Agent) History() []llm.Message {
+	if len(a.history) == 0 {
+		return nil
+	}
+	out := make([]llm.Message, len(a.history))
+	copy(out, a.history)
+	return out
+}
+
+// sessionMessages returns a working copy of history, seeding system on first use.
+func (a *Agent) sessionMessages() []llm.Message {
+	if len(a.history) > 0 {
+		out := make([]llm.Message, len(a.history))
+		copy(out, a.history)
+		return out
+	}
+	system := a.SystemPrompt
+	if system == "" {
+		system = defaultSystemPrompt()
+	}
+	return []llm.Message{
+		{Role: llm.RoleSystem, Content: system},
+	}
 }
 
 func defaultSystemPrompt() string {

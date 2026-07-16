@@ -30,10 +30,11 @@
 
 ## 推荐练习
 
-1. 新增工具 `word_count`，数一段文字的词数  
-2. 改 system prompt，强制数学必须用 `calculator`  
-3. 设 `MaxTurns=1`，观察工具链中断  
-4. 把 `messages` 提到 `Agent` 字段上，支持多轮对话  
+1. ~~把 `messages` 提到 `Agent` 上，支持多轮对话~~（已完成：`history` + `Reset` / `/new`）  
+2. 新增工具 `word_count`，数一段文字的词数  
+3. 改 system prompt，强制数学必须用 `calculator`  
+4. 设 `MaxTurns=1`，观察工具链中断  
+5. 给工具结果做长度截断，防止撑爆 context  
 
 ## 读源码顺序
 

@@ -14,6 +14,8 @@
 //	go run ./cmd/agent "现在几点？请用工具查"
 //	go run ./cmd/agent "帮我算 123 * 456"
 //	go run ./cmd/agent
+//
+// Interactive commands: /new (reset session), /history, quit
 package main
 
 import (
@@ -56,7 +58,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("agent_go — minimal Go agent (type quit to exit)")
+	fmt.Println("agent_go — multi-turn session (quit to exit, /new to reset, /history)")
 	fmt.Printf("model=%s base=%s\n", provider.Model, provider.BaseURL)
 
 	in := bufio.NewScanner(os.Stdin)
@@ -69,8 +71,16 @@ func main() {
 		if line == "" {
 			continue
 		}
-		if line == "quit" || line == "exit" || line == "q" {
+		switch {
+		case line == "quit" || line == "exit" || line == "q":
 			return
+		case line == "/new" || line == "/reset" || line == "/clear":
+			a.Reset()
+			fmt.Println("(session cleared)")
+			continue
+		case line == "/history":
+			printHistory(a)
+			continue
 		}
 		if err := ask(ctx, a, line); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -90,6 +100,24 @@ func ask(ctx context.Context, a *agent.Agent, question string) error {
 	fmt.Println()
 	fmt.Println(answer)
 	return nil
+}
+
+func printHistory(a *agent.Agent) {
+	h := a.History()
+	if len(h) == 0 {
+		fmt.Println("(empty session)")
+		return
+	}
+	for i, m := range h {
+		content := m.Content
+		if len(m.ToolCalls) > 0 {
+			content = fmt.Sprintf("<tool_calls:%d> %s", len(m.ToolCalls), content)
+		}
+		if len(content) > 120 {
+			content = content[:120] + "..."
+		}
+		fmt.Printf("%2d. %-10s %s\n", i+1, m.Role, content)
+	}
 }
 
 func env(key, fallback string) string {
