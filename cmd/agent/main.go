@@ -2,12 +2,14 @@
 //
 //	Agent = LLM (brain) + Tools (hands) + Loop (scheduler)
 //
-// Environment:
+// Environment (shell export, or project .env — see .env.example):
 //
 //	OPENAI_API_KEY   API key (optional for some local servers)
 //	OPENAI_BASE_URL  default https://api.openai.com/v1; Ollama: http://localhost:11434/v1
 //	OPENAI_MODEL     default gpt-4o-mini; Ollama e.g. qwen2.5:7b
 //	AGENT_VERBOSE    set to 0/false to hide turn logs (default: on)
+//
+// On startup, loadDotEnv(".env") fills missing vars only (does not override export).
 //
 // Usage:
 //
@@ -35,6 +37,11 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if _, err := loadDotEnv(".env"); err != nil {
+		fmt.Fprintf(os.Stderr, "dotenv: %v\n", err)
+		os.Exit(1)
+	}
 
 	provider := llm.NewOpenAI(
 		env("OPENAI_BASE_URL", "https://api.openai.com/v1"),

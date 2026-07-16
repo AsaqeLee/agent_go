@@ -47,9 +47,14 @@
 git clone https://github.com/asaqelee/agent_go.git
 cd agent_go
 
-# 配置（也可用 .env.example 作参考）
-export OPENAI_API_KEY=sk-...
-export OPENAI_MODEL=gpt-4o-mini   # 可选
+# 配置方式二选一：
+# 1) 复制 .env.example → .env 后编辑（启动时自动加载，不覆盖已 export 的变量）
+cp .env.example .env
+# 编辑 .env 填入 OPENAI_API_KEY 等
+
+# 2) 或直接 export
+# export OPENAI_API_KEY=sk-...
+# export OPENAI_MODEL=gpt-4o-mini
 
 # 单次提问
 go run ./cmd/agent "现在几点？请用工具查"
@@ -74,6 +79,9 @@ go run ./cmd/agent "帮我算 12 * 34"
 ```
 
 ### 环境变量
+
+支持 **shell export** 与项目根目录 **`.env`**（零依赖解析；文件不存在则跳过）。  
+优先级：**已有环境变量 > `.env` > 代码默认值**。
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
