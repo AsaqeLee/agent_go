@@ -222,3 +222,120 @@ func TestResetClearsHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// longBlobTool returns a large string so we can test history capping.
+type longBlobTool struct {
+	n int
+}
+
+func (longBlobTool) Name() string        { return "long_blob" }
+func (longBlobTool) Description() string { return "returns a long string" }
+func (longBlobTool) Parameters() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (t longBlobTool) Run(string) (string, error) {
+	return strings.Repeat("你", t.n), nil // multi-byte runes
+}
+
+func TestToolResultTruncatedInHistory(t *testing.T) {
+	const limit = 100
+	const blobRunes = 5000
+
+	p := &scriptedProvider{
+		responses: []llm.Response{
+			{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					ToolCalls: []llm.ToolCall{{
+						ID:   "call_long",
+						Type: "function",
+						Function: llm.FunctionCall{
+							Name:      "long_blob",
+							Arguments: `{}`,
+						},
+					}},
+				},
+			},
+			{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+		},
+	}
+
+	// Second Chat must receive a capped tool message, not 5000 runes.
+	p.onChat = func(req llm.Request, callIndex int) {
+		if callIndex != 1 {
+			return
+		}
+		var toolContent string
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleTool {
+				toolContent = m.Content
+			}
+		}
+		if toolContent == "" {
+			t.Fatal("missing tool message on second turn")
+		}
+		if strings.Count(toolContent, "你") >= blobRunes {
+			t.Fatalf("tool content not truncated: %d runes of 你", strings.Count(toolContent, "你"))
+		}
+		if !strings.Contains(toolContent, "truncated") {
+			t.Fatalf("expected truncation marker, got %q", toolContent[:min(80, len(toolContent))])
+		}
+		// Hard upper bound: should not be much larger than limit + marker.
+		if n := len([]rune(toolContent)); n > limit+80 {
+			t.Fatalf("tool content still too long: %d runes", n)
+		}
+	}
+
+	a := &Agent{
+		Provider:           p,
+		Tools:              []tool.Tool{longBlobTool{n: blobRunes}},
+		MaxTurns:           4,
+		MaxToolResultChars: limit,
+	}
+	if _, err := a.Run(context.Background(), "blob"); err != nil {
+		t.Fatal(err)
+	}
+
+	// History commit also uses the capped content.
+	for _, m := range a.History() {
+		if m.Role == llm.RoleTool {
+			if strings.Count(m.Content, "你") >= blobRunes {
+				t.Fatal("history still has full blob")
+			}
+			if !strings.Contains(m.Content, "truncated") {
+				t.Fatal("history missing truncation marker")
+			}
+		}
+	}
+}
+
+func TestToolResultUnlimitedWhenNegative(t *testing.T) {
+	blob := strings.Repeat("a", 8000)
+	a := &Agent{MaxToolResultChars: -1}
+	out, truncated := a.capToolResult(blob)
+	if truncated || out != blob {
+		t.Fatalf("truncated=%v len=%d", truncated, len(out))
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	s := strings.Repeat("汉", 100)
+	out, cut := truncateRunes(s, 20)
+	if !cut {
+		t.Fatal("expected cut")
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Fatalf("got %q", out)
+	}
+	// Must not split UTF-8: every non-ASCII rune in prefix should be 汉
+	prefix := strings.Split(out, "\n...")[0]
+	for _, r := range prefix {
+		if r != '汉' {
+			t.Fatalf("bad rune %q in %q", r, prefix)
+		}
+	}
+	out2, cut2 := truncateRunes("short", 100)
+	if cut2 || out2 != "short" {
+		t.Fatalf("%q %v", out2, cut2)
+	}
+}

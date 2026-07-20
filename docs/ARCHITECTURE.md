@@ -33,11 +33,14 @@ for turn in 1..MaxTurns:
         return reply.content
     for each call in reply.tool_calls:
         result = tools.Execute(call)
+        result = cap(result, MaxToolResultChars)  # default 4096 runes
         messages.append(tool message with call id)
 return error: max turns exceeded   # history unchanged
 ```
 
 `Agent.Reset()` clears history for a new session. CLI: `/new`, `/history`.
+
+Tool results are capped **before** they enter `messages` / session history so one fat log cannot blow the context window. Set `MaxToolResultChars < 0` to disable.
 
 ## Message roles
 

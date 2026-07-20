@@ -15,10 +15,15 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/tool"
 )
+
+// DefaultMaxToolResultChars caps each tool result written into the conversation.
+// Large outputs (logs, HTML) otherwise inflate multi-turn history and the context window.
+const DefaultMaxToolResultChars = 4096
 
 // Agent holds the model, tools, system prompt, loop limits, and session history.
 type Agent struct {
@@ -26,6 +31,9 @@ type Agent struct {
 	Tools        []tool.Tool
 	SystemPrompt string
 	MaxTurns     int // default 8; prevents runaway loops
+	// MaxToolResultChars limits each tool result stored in history (and sent back to the model).
+	// 0 means DefaultMaxToolResultChars; negative means no limit.
+	MaxToolResultChars int
 	// Verbose logs each turn to Log (or stderr if Log is nil).
 	Verbose bool
 	// Log is the optional verbose sink; defaults to os.Stderr when Verbose is true.
@@ -92,8 +100,13 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		a.log("tool_calls: %d", len(assistant.ToolCalls))
 		for _, tc := range assistant.ToolCalls {
 			a.log("  → %s(%s)", tc.Function.Name, tc.Function.Arguments)
-			result := registry.Execute(tc.Function.Name, tc.Function.Arguments)
-			a.log("  ← %s", truncate(result, 200))
+			raw := registry.Execute(tc.Function.Name, tc.Function.Arguments)
+			result, truncated := a.capToolResult(raw)
+			if truncated {
+				a.log("  ← (truncated %d→%d chars) %s", utf8.RuneCountInString(raw), utf8.RuneCountInString(result), preview(result, 200))
+			} else {
+				a.log("  ← %s", preview(result, 200))
+			}
 
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
@@ -138,6 +151,47 @@ func (a *Agent) sessionMessages() []llm.Message {
 	}
 }
 
+// capToolResult limits tool output size before it enters the conversation.
+// limit <= 0 uses DefaultMaxToolResultChars; limit < 0 on the field means unlimited.
+func (a *Agent) capToolResult(s string) (out string, truncated bool) {
+	limit := a.MaxToolResultChars
+	if limit < 0 {
+		return s, false
+	}
+	if limit == 0 {
+		limit = DefaultMaxToolResultChars
+	}
+	return truncateRunes(s, limit)
+}
+
+// truncateRunes keeps at most maxRunes runes and appends a clear marker when cut.
+func truncateRunes(s string, maxRunes int) (string, bool) {
+	if maxRunes <= 0 || utf8.RuneCountInString(s) <= maxRunes {
+		return s, false
+	}
+	// Leave room for the suffix so total stays near maxRunes when possible.
+	suffix := fmt.Sprintf("\n...[truncated, original %d chars]", utf8.RuneCountInString(s))
+	keep := maxRunes
+	if keep > 32 {
+		// Prefer keeping content under maxRunes including a short notice.
+		// If suffix is longer than budget, still cut hard at maxRunes then append.
+		if utf8.RuneCountInString(suffix) < keep {
+			keep = maxRunes - utf8.RuneCountInString(suffix)
+		}
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n >= keep {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	b.WriteString(suffix)
+	return b.String(), true
+}
+
 func defaultSystemPrompt() string {
 	return strings.TrimSpace(`
 You are a helpful assistant with tools.
@@ -159,10 +213,12 @@ func (a *Agent) log(format string, args ...any) {
 	fmt.Fprintf(w, "[agent] "+format+"\n", args...)
 }
 
-func truncate(s string, n int) string {
+// preview is for verbose logs only (does not affect model context).
+func preview(s string, maxRunes int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	runes := []rune(s)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
 		return s
 	}
-	return s[:n] + "..."
+	return string(runes[:maxRunes]) + "..."
 }
