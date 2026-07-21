@@ -140,11 +140,49 @@ func (EchoNote) Run(argsJSON string) (string, error) {
 	return fmt.Sprintf("noted: %s", args.Text), nil
 }
 
+// WordCount counts whitespace-separated tokens (strings.Fields).
+// Chinese/CJK without spaces is typically one token; punctuation may stick to tokens.
+type WordCount struct{}
+
+func (WordCount) Name() string { return "word_count" }
+func (WordCount) Description() string {
+	return "Count whitespace-separated tokens in text (split on spaces/tabs/newlines, same as Go strings.Fields). " +
+		"Use when the user asks how many words or tokens a passage has and needs an exact count. " +
+		"Important: text without whitespace (e.g. continuous Chinese/CJK) counts as ONE token, not per character. " +
+		"Punctuation usually stays attached to the adjacent token (e.g. \"Hello,\" is one token)."
+}
+func (WordCount) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"text": map[string]any{
+				"type":        "string",
+				"description": "Full text to count. Tokens are whitespace-separated; no language-specific word segmentation.",
+			},
+		},
+		"required": []string{"text"},
+	}
+}
+
+type wordCountArgs struct {
+	Text string `json:"text"`
+}
+
+func (WordCount) Run(argsJSON string) (string, error) {
+	args, err := ParseArgs[wordCountArgs](argsJSON)
+	if err != nil {
+		return "", err
+	}
+	words := strings.Fields(args.Text)
+	return fmt.Sprintf("%d", len(words)), nil
+}
+
 // DefaultTools returns the built-in teaching toolset.
 func DefaultTools() []Tool {
 	return []Tool{
 		GetTime{},
 		Calculator{},
 		EchoNote{},
+		WordCount{},
 	}
 }
