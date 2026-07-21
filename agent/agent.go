@@ -34,6 +34,9 @@ type Agent struct {
 	// MaxToolResultChars limits each tool result stored in history (and sent back to the model).
 	// 0 means DefaultMaxToolResultChars; negative means no limit.
 	MaxToolResultChars int
+	// MaxHistoryMessages caps session length after each successful Run.
+	// 0 means unlimited. Trimming drops oldest complete user-turns (never splits tool_calls from tool results).
+	MaxHistoryMessages int
 	// Verbose logs each turn to Log (or stderr if Log is nil).
 	Verbose bool
 	// Log is the optional verbose sink; defaults to os.Stderr when Verbose is true.
@@ -89,9 +92,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		assistant := resp.Message
 		messages = append(messages, assistant)
 
-		// Case A: no tools → done; commit history.
+		// Case A: no tools → done; commit history, then optional session trim.
 		if len(assistant.ToolCalls) == 0 {
-			a.history = messages
+			a.commitHistory(messages)
 			a.log("final: %s", assistant.Content)
 			return strings.TrimSpace(assistant.Content), nil
 		}
@@ -118,6 +121,15 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	return "", fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
+}
+
+// commitHistory stores a successful run and trims old user-turns if over MaxHistoryMessages.
+func (a *Agent) commitHistory(messages []llm.Message) {
+	a.history = messages
+	if dropped := a.trimHistory(); dropped > 0 {
+		a.log("history trim: dropped %d oldest user-turn(s), now %d messages (%s)",
+			dropped, len(a.history), a.Stats().FormatStats())
+	}
 }
 
 // Reset clears conversation history. The next Run starts a new session (new system prompt).

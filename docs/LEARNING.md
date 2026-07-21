@@ -32,9 +32,10 @@
 
 1. ~~多轮对话~~（`history` + `Reset` / `/new`）  
 2. ~~工具结果截断~~（`MaxToolResultChars`，默认 4096）  
-3. 新增工具 `word_count`，数一段文字的词数  
-4. 改 system prompt，强制数学必须用 `calculator`  
+3. ~~会话 context~~（`MaxHistoryMessages` 按轮裁剪 + `/history` 统计）  
+4. ~~word_count 工具~~（空格分词语义）  
 5. 设 `MaxTurns=1`，观察工具链中断  
+6. Tool 传入 `context`、流式输出（进阶）  
 
 ## 读源码顺序
 

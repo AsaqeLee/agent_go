@@ -16,6 +16,7 @@
 - **完整 Agent Loop**：`LLM → tool_calls → 执行 → 回写 → 再 LLM`
 - **多轮会话**：`Agent` 跨 `Run` 保留历史；`Reset` / CLI `/new` 开新会话
 - **工具结果截断**：写入 history 前按 rune 上限裁剪（默认 4096），防止撑爆 context
+- **会话裁剪**：`MaxHistoryMessages` 按完整 user-turn 丢弃最旧轮（默认 CLI 40）；`/history` 显示条数/字符统计
 - **OpenAI 兼容**：官方 API / Ollama / DeepSeek / 任意 `/v1/chat/completions`
 - **零第三方依赖**：仅 `net/http` + 标准库
 - **教学用内置工具**：`get_time` · `calculator` · `echo_note`
@@ -90,6 +91,7 @@ go run ./cmd/agent "帮我算 12 * 34"
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | 兼容端点 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 模型名 |
 | `AGENT_VERBOSE` | `true` | 打印每一轮 tool call |
+| `AGENT_MAX_HISTORY_MESSAGES` | `40`（CLI） | 会话消息上限；`0` 不限制 |
 
 ## 作为库使用
 

@@ -42,6 +42,16 @@ return error: max turns exceeded   # history unchanged
 
 Tool results are capped **before** they enter `messages` / session history so one fat log cannot blow the context window. Set `MaxToolResultChars < 0` to disable.
 
+### Session context controls
+
+| Knob | Meaning |
+|------|---------|
+| `MaxToolResultChars` | Cap each tool result (default 4096 runes) |
+| `MaxHistoryMessages` | After each successful `Run`, drop **oldest complete user-turns** until `len(history) <= N` (0 = unlimited). A user-turn is `user` + following messages until the next `user`. Never splits `tool_calls` from their `tool` replies. |
+| `Stats()` / `/history` | Observability: message count, bytes, runes, per-role counts, user_turns |
+
+CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
+
 ## Message roles
 
 | Role | Written by | Purpose |
