@@ -17,7 +17,7 @@
 //	go run ./cmd/agent "现在几点？请用工具查"
 //	go run ./cmd/agent
 //
-// Interactive commands: /new, /history, quit
+// Interactive commands: /new, /history, /history full, quit
 package main
 
 import (
@@ -35,6 +35,10 @@ import (
 	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/tool"
 )
+
+// listPreviewRunes is the max runes shown per message in compact /history.
+// Summary messages are always printed in full (they exist so you can audit them).
+const listPreviewRunes = 120
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -68,7 +72,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("agent_go — multi-turn (quit | /new | /history)")
+	fmt.Println("agent_go — multi-turn (quit | /new | /history | /history full)")
 	fmt.Printf("model=%s base=%s max_history_messages=%d\n",
 		provider.Model, provider.BaseURL, a.MaxHistoryMessages)
 
@@ -89,8 +93,8 @@ func main() {
 			a.Reset()
 			fmt.Println("(session cleared)")
 			continue
-		case line == "/history":
-			printHistory(a)
+		case line == "/history" || line == "/history full":
+			printHistory(a, line == "/history full")
 			continue
 		}
 		if err := ask(ctx, a, line); err != nil {
@@ -113,10 +117,13 @@ func ask(ctx context.Context, a *agent.Agent, question string) error {
 	return nil
 }
 
-func printHistory(a *agent.Agent) {
+func printHistory(a *agent.Agent, full bool) {
 	h := a.History()
 	st := a.Stats()
 	fmt.Println(st.FormatStats())
+	if !full {
+		fmt.Println("(list preview ≤120 runes/msg; summary always full; use /history full for all)")
+	}
 	if len(h) == 0 {
 		fmt.Println("(empty session)")
 		return
@@ -127,14 +134,23 @@ func printHistory(a *agent.Agent) {
 			content = fmt.Sprintf("<tool_calls:%d> %s", len(m.ToolCalls), content)
 		}
 		label := string(m.Role)
-		if strings.HasPrefix(m.Content, "[conversation_summary]") {
+		isSummary := strings.HasPrefix(m.Content, "[conversation_summary]")
+		if isSummary {
 			label = "summary"
 		}
-		runes := utf8.RuneCountInString(content)
-		if runes > 120 {
-			content = string([]rune(content)[:120]) + "..."
+		// Compact mode: truncate normal messages only; keep summary fully readable.
+		if !full && !isSummary {
+			runes := utf8.RuneCountInString(content)
+			if runes > listPreviewRunes {
+				content = string([]rune(content)[:listPreviewRunes]) + "..."
+			}
 		}
-		fmt.Printf("%2d. %-10s %s\n", i+1, label, content)
+		// Multi-line content (e.g. summary): indent continuation lines.
+		lines := strings.Split(content, "\n")
+		fmt.Printf("%2d. %-10s %s\n", i+1, label, lines[0])
+		for _, line := range lines[1:] {
+			fmt.Printf("    %s\n", line)
+		}
 	}
 }
 
