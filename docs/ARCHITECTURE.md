@@ -48,8 +48,8 @@ Tool results are capped **before** they enter `messages` / session history so on
 |------|---------|
 | `MaxToolResultChars` | Cap each tool result (default 4096 runes) |
 | `MaxHistoryMessages` | After each successful `Run`, drop **oldest complete user-turns** until `len(history) <= N` (0 = unlimited). A user-turn is `user` + following messages until the next `user`. Never splits `tool_calls` from their `tool` replies. |
-| `Stats()` / `/history` | Observability: message count, bytes, runes, per-role counts, user_turns |
-
+| **Trim summary** | Dropped turns are **not discarded blindly**: content is folded into a sticky system message `[conversation_summary]` (extractive bullets: user / assistant / tool). Prior summary is merged on further trims. Cap: `DefaultMaxSummaryRunes` (1200). |
+| `Stats()` / `/history` | Observability: message count, bytes, runes, per-role counts, user_turns, `summary=yes` |
 CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
 
 ## Message roles

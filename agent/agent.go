@@ -124,10 +124,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 }
 
 // commitHistory stores a successful run and trims old user-turns if over MaxHistoryMessages.
+// Dropped turns are folded into a sticky [conversation_summary] system message.
 func (a *Agent) commitHistory(messages []llm.Message) {
 	a.history = messages
 	if dropped := a.trimHistory(); dropped > 0 {
-		a.log("history trim: dropped %d oldest user-turn(s), now %d messages (%s)",
+		a.log("history trim: dropped %d oldest user-turn(s), summary updated, now %d messages (%s)",
 			dropped, len(a.history), a.Stats().FormatStats())
 	}
 }

@@ -126,11 +126,15 @@ func printHistory(a *agent.Agent) {
 		if len(m.ToolCalls) > 0 {
 			content = fmt.Sprintf("<tool_calls:%d> %s", len(m.ToolCalls), content)
 		}
+		label := string(m.Role)
+		if strings.HasPrefix(m.Content, "[conversation_summary]") {
+			label = "summary"
+		}
 		runes := utf8.RuneCountInString(content)
 		if runes > 120 {
 			content = string([]rune(content)[:120]) + "..."
 		}
-		fmt.Printf("%2d. %-10s %s\n", i+1, m.Role, content)
+		fmt.Printf("%2d. %-10s %s\n", i+1, label, content)
 	}
 }
 
