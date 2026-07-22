@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
 )
@@ -171,13 +172,71 @@ func TestBuildConversationSummaryIncludesTools(t *testing.T) {
 		{Role: llm.RoleAssistant, Content: "已记住小明"},
 	}
 	s := buildConversationSummary("", dropped)
+	// High-signal: user claim + tool note + short asst. Not a full transcript dump.
 	for _, want := range []string{"我是小明", "echo_note", "用户叫小明", "已记住小明"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("summary missing %q: %s", want, s)
 		}
 	}
+	if !strings.Contains(s, "Lossy memory") {
+		t.Fatalf("expected lossy header: %s", s)
+	}
 }
 
+func TestBuildConversationSummaryIsLossyNotArchive(t *testing.T) {
+	longAsst := strings.Repeat("啰嗦客套话", 80) // long assistant fluff must not bloat summary
+	dropped := []llm.Message{
+		{Role: llm.RoleUser, Content: "我叫小明"},
+		{Role: llm.RoleAssistant, Content: longAsst},
+		{Role: llm.RoleTool, Name: "echo_note", Content: "noted: 用户叫小明"},
+	}
+	// Seed many old bullets then add new — must keep at most maxSummaryBullets and stay small.
+	var old strings.Builder
+	old.WriteString("Lossy memory of trimmed turns (not full transcript). Prefer these facts:\n")
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&old, "- user: old-fact-%d\n", i)
+	}
+	s := buildConversationSummary(old.String(), dropped)
+	if utf8.RuneCountInString(s) > DefaultMaxSummaryRunes+50 {
+		t.Fatalf("summary too large: %d runes", utf8.RuneCountInString(s))
+	}
+	// Long assistant prose should not appear in full.
+	if strings.Contains(s, longAsst[:20]) {
+		t.Fatal("long assistant content was archived into summary")
+	}
+	// Newest facts should survive rolling window.
+	if !strings.Contains(s, "小明") {
+		t.Fatalf("expected user/tool fact retained: %s", s)
+	}
+	// Oldest bulk facts should mostly fall off (not all 30 kept).
+	if strings.Contains(s, "old-fact-0") && strings.Contains(s, "old-fact-1") && strings.Contains(s, "old-fact-2") {
+		// With max 12 bullets, early facts should be gone.
+		t.Fatalf("expected old bullets to roll off: %s", s)
+	}
+}
+
+func TestSummaryBulletCap(t *testing.T) {
+	var dropped []llm.Message
+	for i := 0; i < 20; i++ {
+		dropped = append(dropped, llm.Message{
+			Role:    llm.RoleUser,
+			Content: fmt.Sprintf("fact-%d unique content here", i),
+		})
+	}
+	s := buildConversationSummary("", dropped)
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- ") {
+			n++
+		}
+	}
+	if n > maxSummaryBullets {
+		t.Fatalf("bullets=%d want <=%d\n%s", n, maxSummaryBullets, s)
+	}
+	if !strings.Contains(s, "fact-19") {
+		t.Fatalf("newest fact missing: %s", s)
+	}
+}
 func TestStatsEmpty(t *testing.T) {
 	a := &Agent{}
 	st := a.Stats()

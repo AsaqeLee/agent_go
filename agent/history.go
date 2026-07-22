@@ -12,8 +12,17 @@ import (
 // compressed facts from trimmed user-turns.
 const conversationSummaryMarker = "[conversation_summary]"
 
-// DefaultMaxSummaryRunes caps the sticky summary so it cannot grow without bound.
-const DefaultMaxSummaryRunes = 1200
+// Summary is intentionally lossy: we do NOT archive full dropped turns.
+// Only short, high-signal facts (user claims + tool results + short assistant
+// conclusions) are kept, with a hard bullet cap and rune cap.
+const (
+	// DefaultMaxSummaryRunes hard-caps the entire sticky summary message.
+	DefaultMaxSummaryRunes = 512
+	// maxSummaryBullets keeps only the newest N facts (older ones fall off).
+	maxSummaryBullets = 12
+	// maxFactRunes clips each bullet body (not counting the "- user: " prefix).
+	maxFactRunes = 64
+)
 
 // HistoryStats summarizes session size for observability (/history, debugging).
 type HistoryStats struct {
@@ -251,54 +260,114 @@ func upsertSummary(msgs []llm.Message, summaryBody string) []llm.Message {
 	return out
 }
 
-// buildConversationSummary folds previous sticky summary + newly dropped messages
-// into a compact, model-facing record (extractive; no extra LLM call).
+// buildConversationSummary merges prior sticky facts with newly dropped turns into a
+// **lossy** rolling memory: short bullets only, newest preferred, hard size limits.
+// This is not an archive of the full conversation (that would re-bloat context).
 func buildConversationSummary(prevBody string, dropped []llm.Message) string {
+	bullets := parseSummaryBullets(prevBody)
+	bullets = append(bullets, factsFromDropped(dropped)...)
+	bullets = dedupeBullets(bullets)
+	if len(bullets) > maxSummaryBullets {
+		// Keep newest facts; older low-priority detail falls off.
+		bullets = bullets[len(bullets)-maxSummaryBullets:]
+	}
+
 	var b strings.Builder
-	b.WriteString("Earlier turns were removed to free context. Retain these facts:\n")
-	if prevBody != "" {
-		// Keep prior summary bullets if present; strip our own header lines if re-folded.
-		prev := strings.TrimSpace(prevBody)
-		prev = strings.TrimPrefix(prev, "Earlier turns were removed to free context. Retain these facts:")
-		prev = strings.TrimSpace(prev)
-		if prev != "" {
-			b.WriteString(prev)
-			if !strings.HasSuffix(prev, "\n") {
-				b.WriteByte('\n')
-			}
+	b.WriteString("Lossy memory of trimmed turns (not full transcript). Prefer these facts:\n")
+	for _, line := range bullets {
+		b.WriteString("- ")
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	out := strings.TrimSpace(b.String())
+	capped, _ := truncateRunes(out, DefaultMaxSummaryRunes)
+	return capped
+}
+
+// parseSummaryBullets pulls "- ..." lines from a previous summary body.
+func parseSummaryBullets(body string) []string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil
+	}
+	// Drop legacy headers if re-folding old summaries.
+	for _, header := range []string{
+		"Lossy memory of trimmed turns (not full transcript). Prefer these facts:",
+		"Earlier turns were removed to free context. Retain these facts:",
+	} {
+		body = strings.TrimSpace(strings.TrimPrefix(body, header))
+	}
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
 		}
 	}
+	return out
+}
+
+// factsFromDropped extracts high-signal, short facts only.
+// Skips long assistant prose and pure tool-call shells that add little memory value.
+func factsFromDropped(dropped []llm.Message) []string {
+	var facts []string
 	for _, m := range dropped {
 		switch m.Role {
 		case llm.RoleUser:
-			if t := clipOneLine(m.Content, 160); t != "" {
-				fmt.Fprintf(&b, "- User: %s\n", t)
-			}
-		case llm.RoleAssistant:
-			if len(m.ToolCalls) > 0 {
-				var names []string
-				for _, tc := range m.ToolCalls {
-					names = append(names, tc.Function.Name)
-				}
-				fmt.Fprintf(&b, "- Assistant called tools: %s\n", strings.Join(names, ", "))
-			}
-			if t := clipOneLine(m.Content, 160); t != "" {
-				fmt.Fprintf(&b, "- Assistant: %s\n", t)
+			if f := formatFact("user", m.Content); f != "" {
+				facts = append(facts, f)
 			}
 		case llm.RoleTool:
 			name := m.Name
 			if name == "" {
 				name = "tool"
 			}
-			if t := clipOneLine(m.Content, 120); t != "" {
-				fmt.Fprintf(&b, "- Tool(%s): %s\n", name, t)
+			// Tool outputs (notes, calc results) are the highest-value memory signal.
+			if f := formatFact("tool:"+name, m.Content); f != "" {
+				facts = append(facts, f)
+			}
+		case llm.RoleAssistant:
+			// Skip "I will call a tool" shells with no useful prose.
+			if len(m.ToolCalls) > 0 && strings.TrimSpace(m.Content) == "" {
+				continue
+			}
+			// Long assistant chatter is usually noise for memory; keep only short conclusions.
+			if utf8.RuneCountInString(strings.TrimSpace(m.Content)) > 80 {
+				continue
+			}
+			if f := formatFact("asst", m.Content); f != "" {
+				facts = append(facts, f)
 			}
 		}
 	}
-	out := strings.TrimSpace(b.String())
-	// Cap summary size (reuse rune truncator from agent.go).
-	capped, _ := truncateRunes(out, DefaultMaxSummaryRunes)
-	return capped
+	return facts
+}
+
+func formatFact(kind, content string) string {
+	t := clipOneLine(content, maxFactRunes)
+	if t == "" {
+		return ""
+	}
+	return kind + ": " + t
+}
+
+func dedupeBullets(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, b := range in {
+		key := strings.ToLower(strings.TrimSpace(b))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, b)
+	}
+	return out
 }
 
 func clipOneLine(s string, maxRunes int) string {
