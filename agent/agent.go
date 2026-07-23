@@ -25,7 +25,7 @@ import (
 // Large outputs (logs, HTML) otherwise inflate multi-turn history and the context window.
 const DefaultMaxToolResultChars = 4096
 
-// Agent holds the model, tools, system prompt, loop limits, and session history.
+// Agent holds the model, tools, system prompt, loop limits, session history, and profile memory.
 type Agent struct {
 	Provider     llm.Provider
 	Tools        []tool.Tool
@@ -37,6 +37,9 @@ type Agent struct {
 	// MaxHistoryMessages caps session length after each successful Run.
 	// 0 means unlimited. Trimming drops oldest complete user-turns (never splits tool_calls from tool results).
 	MaxHistoryMessages int
+	// Memory is structured durable fields (name/likes/notes). Survives history trim; injected each Chat.
+	// If nil, profile tools no-op / ephemeral depending on tool wiring.
+	Memory *Memory
 	// Verbose logs each turn to Log (or stderr if Log is nil).
 	Verbose bool
 	// Log is the optional verbose sink; defaults to os.Stderr when Verbose is true.
@@ -80,6 +83,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			return "", fmt.Errorf("agent: %w", err)
 		}
 		a.log("── turn %d ──", turn)
+
+		// Refresh structured profile each Chat so mid-turn memory_set/echo_note is visible next step.
+		messages = upsertProfile(messages, a.Memory)
 
 		resp, err := a.Provider.Chat(ctx, llm.Request{
 			Messages: messages,
@@ -133,9 +139,22 @@ func (a *Agent) commitHistory(messages []llm.Message) {
 	}
 }
 
-// Reset clears conversation history. The next Run starts a new session (new system prompt).
+// Reset clears conversation history (not structured Memory). Next Run reseeds system prompt.
 func (a *Agent) Reset() {
 	a.history = nil
+}
+
+// ResetMemory clears structured profile fields only.
+func (a *Agent) ResetMemory() {
+	if a.Memory != nil {
+		a.Memory.Clear()
+	}
+}
+
+// ResetAll clears chat history and structured Memory.
+func (a *Agent) ResetAll() {
+	a.Reset()
+	a.ResetMemory()
 }
 
 // History returns a copy of the current session messages (for debugging / learning).
@@ -148,20 +167,23 @@ func (a *Agent) History() []llm.Message {
 	return out
 }
 
-// sessionMessages returns a working copy of history, seeding system on first use.
+// sessionMessages returns a working copy of history, seeding system on first use,
+// and always refreshing the structured [user_profile] block from Memory.
 func (a *Agent) sessionMessages() []llm.Message {
+	var out []llm.Message
 	if len(a.history) > 0 {
-		out := make([]llm.Message, len(a.history))
+		out = make([]llm.Message, len(a.history))
 		copy(out, a.history)
-		return out
+	} else {
+		system := a.SystemPrompt
+		if system == "" {
+			system = defaultSystemPrompt()
+		}
+		out = []llm.Message{
+			{Role: llm.RoleSystem, Content: system},
+		}
 	}
-	system := a.SystemPrompt
-	if system == "" {
-		system = defaultSystemPrompt()
-	}
-	return []llm.Message{
-		{Role: llm.RoleSystem, Content: system},
-	}
+	return upsertProfile(out, a.Memory)
 }
 
 // capToolResult limits tool output size before it enters the conversation.
@@ -208,8 +230,10 @@ func truncateRunes(s string, maxRunes int) (string, bool) {
 func defaultSystemPrompt() string {
 	return strings.TrimSpace(`
 You are a helpful assistant with tools.
-- Use tools when they help answer accurately (time, math, notes).
+- Use tools when they help answer accurately (time, math, notes, user profile).
 - Prefer calculator for arithmetic; do not guess multiplications.
+- For durable user facts (name, likes), use memory_set or echo_note; they go into [user_profile] and survive history trim.
+- Trust [user_profile] over older chat when they conflict.
 - After tools return, give a concise final answer to the user.
 - Reply in the same language the user uses.
 `)

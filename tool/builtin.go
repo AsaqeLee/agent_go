@@ -105,12 +105,17 @@ func evalTwoOperand(expr string) (float64, error) {
 	return 0, fmt.Errorf("unsupported expression %q (want like \"2 + 3\")", expr)
 }
 
-// EchoNote records a short note and confirms it (tiny side-effect demo).
-type EchoNote struct{}
+// EchoNote records free-form text into the structured MemoryStore (notes + heuristics).
+type EchoNote struct {
+	Store MemoryStore
+}
 
 func (EchoNote) Name() string { return "echo_note" }
-func (EchoNote) Description() string {
-	return "Save a short note and confirm it was recorded. Use when the user asks to remember or note something."
+func (e EchoNote) Description() string {
+	return "Save a free-form note into the durable user profile (survives chat history trim). " +
+		"Use when the user asks to remember something loosely. " +
+		"For clear fields prefer memory_set (name|like|note). " +
+		"May also detect name/likes from phrases like 我叫… / 喜欢…"
 }
 func (EchoNote) Parameters() map[string]any {
 	return map[string]any{
@@ -118,7 +123,7 @@ func (EchoNote) Parameters() map[string]any {
 		"properties": map[string]any{
 			"text": map[string]any{
 				"type":        "string",
-				"description": "The note content",
+				"description": "The note content to persist into profile notes",
 			},
 		},
 		"required": []string{"text"},
@@ -129,7 +134,7 @@ type noteArgs struct {
 	Text string `json:"text"`
 }
 
-func (EchoNote) Run(argsJSON string) (string, error) {
+func (e EchoNote) Run(argsJSON string) (string, error) {
 	args, err := ParseArgs[noteArgs](argsJSON)
 	if err != nil {
 		return "", err
@@ -137,7 +142,55 @@ func (EchoNote) Run(argsJSON string) (string, error) {
 	if strings.TrimSpace(args.Text) == "" {
 		return "", fmt.Errorf("text is empty")
 	}
-	return fmt.Sprintf("noted: %s", args.Text), nil
+	if e.Store == nil {
+		return fmt.Sprintf("noted (ephemeral, no profile store): %s", args.Text), nil
+	}
+	return e.Store.Remember(args.Text), nil
+}
+
+// MemorySet writes one structured profile field (name | like | note).
+type MemorySet struct {
+	Store MemoryStore
+}
+
+func (MemorySet) Name() string { return "memory_set" }
+func (MemorySet) Description() string {
+	return "Set a durable user profile field that survives history trim. " +
+		"Use field=name for the user's name, field=like for a preference, field=note for other facts. " +
+		"Prefer this over echo_note when the field is clear."
+}
+func (MemorySet) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"field": map[string]any{
+				"type":        "string",
+				"description": "One of: name, like, note",
+				"enum":        []string{"name", "like", "note"},
+			},
+			"value": map[string]any{
+				"type":        "string",
+				"description": "Value to store for that field",
+			},
+		},
+		"required": []string{"field", "value"},
+	}
+}
+
+type memorySetArgs struct {
+	Field string `json:"field"`
+	Value string `json:"value"`
+}
+
+func (t MemorySet) Run(argsJSON string) (string, error) {
+	args, err := ParseArgs[memorySetArgs](argsJSON)
+	if err != nil {
+		return "", err
+	}
+	if t.Store == nil {
+		return "", fmt.Errorf("no profile store configured")
+	}
+	return t.Store.SetField(args.Field, args.Value)
 }
 
 // WordCount counts whitespace-separated tokens (strings.Fields).
@@ -178,11 +231,14 @@ func (WordCount) Run(argsJSON string) (string, error) {
 }
 
 // DefaultTools returns the built-in teaching toolset.
-func DefaultTools() []Tool {
+// Pass a MemoryStore (e.g. *agent.Memory) so echo_note / memory_set persist profile fields.
+// store may be nil (notes become ephemeral).
+func DefaultTools(store MemoryStore) []Tool {
 	return []Tool{
 		GetTime{},
 		Calculator{},
-		EchoNote{},
+		EchoNote{Store: store},
+		MemorySet{Store: store},
 		WordCount{},
 	}
 }

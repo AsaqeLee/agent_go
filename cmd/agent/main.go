@@ -1,6 +1,6 @@
 // Command agent is a minimal CLI for the educational Go agent.
 //
-//	Agent = LLM (brain) + Tools (hands) + Loop (scheduler)
+//	Agent = LLM (brain) + Tools (hands) + Loop (scheduler) + structured Memory
 //
 // Environment (shell export, or project .env — see .env.example):
 //
@@ -10,14 +10,7 @@
 //	AGENT_VERBOSE               set to 0/false to hide turn logs (default: on)
 //	AGENT_MAX_HISTORY_MESSAGES  session message cap; 0 = unlimited (default: 40)
 //
-// On startup, loadDotEnv(".env") fills missing vars only (does not override export).
-//
-// Usage:
-//
-//	go run ./cmd/agent "现在几点？请用工具查"
-//	go run ./cmd/agent
-//
-// Interactive commands: /new, /history, /history full, quit
+// Interactive: quit | /new | /new all | /history [full] | /memory | /memory clear
 package main
 
 import (
@@ -36,8 +29,6 @@ import (
 	"github.com/asaqelee/agent_go/tool"
 )
 
-// listPreviewRunes is the max runes shown per message in compact /history.
-// Summary messages are always printed in full (they exist so you can audit them).
 const listPreviewRunes = 120
 
 func main() {
@@ -55,9 +46,11 @@ func main() {
 		env("OPENAI_MODEL", "gpt-4o-mini"),
 	)
 
+	mem := agent.NewMemory()
 	a := &agent.Agent{
 		Provider:           provider,
-		Tools:              tool.DefaultTools(),
+		Memory:             mem,
+		Tools:              tool.DefaultTools(mem),
 		MaxTurns:           8,
 		MaxHistoryMessages: envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
 		Verbose:            envBool("AGENT_VERBOSE", true),
@@ -72,7 +65,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("agent_go — multi-turn (quit | /new | /history | /history full)")
+	fmt.Println("agent_go — quit | /new | /new all | /history [full] | /memory | /memory clear")
 	fmt.Printf("model=%s base=%s max_history_messages=%d\n",
 		provider.Model, provider.BaseURL, a.MaxHistoryMessages)
 
@@ -91,10 +84,21 @@ func main() {
 			return
 		case line == "/new" || line == "/reset" || line == "/clear":
 			a.Reset()
-			fmt.Println("(session cleared)")
+			fmt.Println("(chat cleared; profile memory kept — use /new all to wipe profile)")
+			continue
+		case line == "/new all" || line == "/reset all":
+			a.ResetAll()
+			fmt.Println("(chat + profile memory cleared)")
 			continue
 		case line == "/history" || line == "/history full":
 			printHistory(a, line == "/history full")
+			continue
+		case line == "/memory":
+			printMemory(a)
+			continue
+		case line == "/memory clear":
+			a.ResetMemory()
+			fmt.Println("(profile memory cleared)")
 			continue
 		}
 		if err := ask(ctx, a, line); err != nil {
@@ -117,12 +121,36 @@ func ask(ctx context.Context, a *agent.Agent, question string) error {
 	return nil
 }
 
+func printMemory(a *agent.Agent) {
+	if a.Memory == nil || a.Memory.Empty() {
+		fmt.Println("(empty profile)")
+		return
+	}
+	s := a.Memory.Snapshot()
+	fmt.Println("structured profile (survives /new and history trim):")
+	if s.Name != "" {
+		fmt.Printf("  name:  %s\n", s.Name)
+	}
+	if len(s.Likes) > 0 {
+		fmt.Printf("  likes: %s\n", strings.Join(s.Likes, "; "))
+	}
+	if len(s.Notes) > 0 {
+		fmt.Println("  notes:")
+		for _, n := range s.Notes {
+			fmt.Printf("    - %s\n", n)
+		}
+	}
+}
+
 func printHistory(a *agent.Agent, full bool) {
 	h := a.History()
 	st := a.Stats()
 	fmt.Println(st.FormatStats())
+	if a.Memory != nil && !a.Memory.Empty() {
+		fmt.Println("profile: " + a.Memory.ShortStatus())
+	}
 	if !full {
-		fmt.Println("(list preview ≤120 runes/msg; summary always full; use /history full for all)")
+		fmt.Println("(list preview ≤120 runes/msg; summary/profile blocks full in messages when present; /history full)")
 	}
 	if len(h) == 0 {
 		fmt.Println("(empty session)")
@@ -135,17 +163,19 @@ func printHistory(a *agent.Agent, full bool) {
 		}
 		label := string(m.Role)
 		isSummary := strings.HasPrefix(m.Content, "[conversation_summary]")
+		isProfile := strings.HasPrefix(m.Content, "[user_profile]")
 		if isSummary {
 			label = "summary"
 		}
-		// Compact mode: truncate normal messages only; keep summary fully readable.
-		if !full && !isSummary {
+		if isProfile {
+			label = "profile"
+		}
+		if !full && !isSummary && !isProfile {
 			runes := utf8.RuneCountInString(content)
 			if runes > listPreviewRunes {
 				content = string([]rune(content)[:listPreviewRunes]) + "..."
 			}
 		}
-		// Multi-line content (e.g. summary): indent continuation lines.
 		lines := strings.Split(content, "\n")
 		fmt.Printf("%2d. %-10s %s\n", i+1, label, lines[0])
 		for _, line := range lines[1:] {
