@@ -34,7 +34,7 @@
 2. ~~工具结果截断~~（`MaxToolResultChars`，默认 4096）  
 3. ~~会话 context~~（按轮裁剪 + 有损 summary）  
 4. ~~word_count~~  
-5. ~~结构化 Memory 字段~~（`name`/`likes`/`notes` + `[user_profile]`）  
+5. ~~结构化 Memory~~（LLM 用 `profile_update` 填字段，非正则；`[user_profile]` 注入）  
 6. 设 `MaxTurns=1`；Tool `context`；流式（进阶）  
 
 ## 读源码顺序

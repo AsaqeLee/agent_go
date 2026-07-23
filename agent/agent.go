@@ -230,15 +230,20 @@ func truncateRunes(s string, maxRunes int) (string, bool) {
 func defaultSystemPrompt() string {
 	return strings.TrimSpace(`
 You are a helpful assistant with tools.
-- Use tools when they help answer accurately (time, math, notes, user profile).
+- Use tools when they help answer accurately (time, math, profile).
 - Prefer calculator for arithmetic; do not guess multiplications.
-- For durable user facts (name, likes), use memory_set or echo_note; they go into [user_profile] and survive history trim.
+
+Durable user profile (survives chat history trim):
+- When the user states durable facts about themselves, YOU must extract fields and call tools — do not rely on chat memory alone.
+- Prefer profile_update with structured fields: name (string), likes (array of strings), notes (array of strings). Only fill fields you are confident about; omit the rest.
+- memory_set sets one field at a time (name|like|note). echo_note only appends a free-text note (does NOT parse name/likes).
+- Never invent profile data. If unsure, ask or omit.
 - Trust [user_profile] over older chat when they conflict.
+
 - After tools return, give a concise final answer to the user.
 - Reply in the same language the user uses.
 `)
 }
-
 func (a *Agent) log(format string, args ...any) {
 	if !a.Verbose {
 		return

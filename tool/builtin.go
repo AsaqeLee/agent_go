@@ -105,17 +105,17 @@ func evalTwoOperand(expr string) (float64, error) {
 	return 0, fmt.Errorf("unsupported expression %q (want like \"2 + 3\")", expr)
 }
 
-// EchoNote records free-form text into the structured MemoryStore (notes + heuristics).
+// EchoNote appends free-form text to profile notes only (no name/like extraction).
 type EchoNote struct {
 	Store MemoryStore
 }
 
 func (EchoNote) Name() string { return "echo_note" }
-func (e EchoNote) Description() string {
-	return "Save a free-form note into the durable user profile (survives chat history trim). " +
-		"Use when the user asks to remember something loosely. " +
-		"For clear fields prefer memory_set (name|like|note). " +
-		"May also detect name/likes from phrases like 我叫… / 喜欢…"
+func (EchoNote) Description() string {
+	return "Append a free-text note to the durable profile notes list only. " +
+		"Does NOT parse name or likes — you (the model) must classify fields yourself. " +
+		"Prefer profile_update when you can fill structured name/likes/notes. " +
+		"Use echo_note only for leftover free-form text that does not fit fields."
 }
 func (EchoNote) Parameters() map[string]any {
 	return map[string]any{
@@ -123,7 +123,7 @@ func (EchoNote) Parameters() map[string]any {
 		"properties": map[string]any{
 			"text": map[string]any{
 				"type":        "string",
-				"description": "The note content to persist into profile notes",
+				"description": "Free-form note text (stored as notes only)",
 			},
 		},
 		"required": []string{"text"},
@@ -155,9 +155,10 @@ type MemorySet struct {
 
 func (MemorySet) Name() string { return "memory_set" }
 func (MemorySet) Description() string {
-	return "Set a durable user profile field that survives history trim. " +
-		"Use field=name for the user's name, field=like for a preference, field=note for other facts. " +
-		"Prefer this over echo_note when the field is clear."
+	return "Set exactly one durable profile field. " +
+		"field=name for the user's name, field=like for one preference, field=note for one fact. " +
+		"You choose the field and value (LLM extraction) — the runtime does not regex-parse user text. " +
+		"For multiple fields in one step prefer profile_update."
 }
 func (MemorySet) Parameters() map[string]any {
 	return map[string]any{
@@ -170,7 +171,7 @@ func (MemorySet) Parameters() map[string]any {
 			},
 			"value": map[string]any{
 				"type":        "string",
-				"description": "Value to store for that field",
+				"description": "Value you extracted for that field",
 			},
 		},
 		"required": []string{"field", "value"},
@@ -191,6 +192,58 @@ func (t MemorySet) Run(argsJSON string) (string, error) {
 		return "", fmt.Errorf("no profile store configured")
 	}
 	return t.Store.SetField(args.Field, args.Value)
+}
+
+// ProfileUpdate is the primary way for the LLM to write structured profile fields.
+// The model fills JSON fields (schema); the runtime only stores them — no regex.
+type ProfileUpdate struct {
+	Store MemoryStore
+}
+
+func (ProfileUpdate) Name() string { return "profile_update" }
+func (ProfileUpdate) Description() string {
+	return "Update the durable user profile with structured fields you extract from the conversation. " +
+		"Call this when the user states lasting facts (name, preferences, other notes). " +
+		"Pass only fields you are confident about; omit unknown fields or use empty values. " +
+		"Do not invent data. Profile survives history trim and is injected as [user_profile]."
+}
+func (ProfileUpdate) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type":        "string",
+				"description": "User's name if stated; omit or empty if unknown",
+			},
+			"likes": map[string]any{
+				"type":        "array",
+				"description": "Preferences/likes to add (each short string)",
+				"items":       map[string]any{"type": "string"},
+			},
+			"notes": map[string]any{
+				"type":        "array",
+				"description": "Other durable facts as short notes",
+				"items":       map[string]any{"type": "string"},
+			},
+		},
+	}
+}
+
+type profileUpdateArgs struct {
+	Name  string   `json:"name"`
+	Likes []string `json:"likes"`
+	Notes []string `json:"notes"`
+}
+
+func (t ProfileUpdate) Run(argsJSON string) (string, error) {
+	args, err := ParseArgs[profileUpdateArgs](argsJSON)
+	if err != nil {
+		return "", err
+	}
+	if t.Store == nil {
+		return "", fmt.Errorf("no profile store configured")
+	}
+	return t.Store.ApplyPatch(args.Name, args.Likes, args.Notes)
 }
 
 // WordCount counts whitespace-separated tokens (strings.Fields).
@@ -237,8 +290,9 @@ func DefaultTools(store MemoryStore) []Tool {
 	return []Tool{
 		GetTime{},
 		Calculator{},
-		EchoNote{Store: store},
+		ProfileUpdate{Store: store},
 		MemorySet{Store: store},
+		EchoNote{Store: store},
 		WordCount{},
 	}
 }

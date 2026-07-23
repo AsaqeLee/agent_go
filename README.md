@@ -17,7 +17,7 @@
 - **多轮会话**：`Agent` 跨 `Run` 保留历史；`Reset` / CLI `/new` 开新会话
 - **工具结果截断**：写入 history 前按 rune 上限裁剪（默认 4096），防止撑爆 context
 - **会话裁剪 + 有损摘要**：`MaxHistoryMessages` 按轮裁剪；`[conversation_summary]` 为有界 bullet
-- **结构化 Memory 字段**：`name` / `likes` / `notes`，经 `memory_set` / `echo_note` 写入，注入 `[user_profile]`，**不随 history trim 丢失**；CLI `/memory`
+- **结构化 Memory**：`name` / `likes` / `notes` 由 LLM 通过 `profile_update`（或 `memory_set`）填 JSON 字段写入，**不用正则抽字段**；注入 `[user_profile]`，不随 trim 丢失；`/memory`
 - **OpenAI 兼容**：官方 API / Ollama / DeepSeek / 任意 `/v1/chat/completions`
 - **零第三方依赖**：仅 `net/http` + 标准库
 - **教学用内置工具**：`get_time` · `calculator` · `echo_note`

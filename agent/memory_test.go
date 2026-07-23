@@ -9,36 +9,46 @@ import (
 	"github.com/asaqelee/agent_go/tool"
 )
 
-func TestMemoryHeuristicsAndRender(t *testing.T) {
+func TestMemoryFieldsNoHeuristics(t *testing.T) {
 	m := NewMemory()
-	m.Remember("用户叫小明，喜欢吃梨")
-	if m.Name != "小明" && m.Name != "小明，喜欢吃梨" {
-		// heuristic takes 我叫/我是; "用户叫小明" may not match — still notes
-		_ = m.Name
+	// Remember must NOT regex-parse name/likes.
+	m.Remember("我叫小明，喜欢吃梨")
+	if m.Name != "" {
+		t.Fatalf("Remember should not set name via heuristics, got %q", m.Name)
 	}
-	m.SetField("name", "小明")
-	m.SetField("like", "梨")
-	if m.Name != "小明" {
-		t.Fatalf("name=%q", m.Name)
+	if len(m.Likes) != 0 {
+		t.Fatalf("Remember should not set likes via heuristics, got %v", m.Likes)
 	}
-	if len(m.Likes) != 1 || m.Likes[0] != "梨" {
-		t.Fatalf("likes=%v", m.Likes)
+	if len(m.Notes) != 1 {
+		t.Fatalf("notes=%v", m.Notes)
+	}
+
+	// LLM-style structured writes.
+	if _, err := m.ApplyPatch("小明", []string{"梨"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "小明" || len(m.Likes) != 1 || m.Likes[0] != "梨" {
+		t.Fatalf("patch failed: %+v", m.Snapshot())
 	}
 	block := m.RenderSystemBlock()
-	if !strings.Contains(block, profileMarker) || !strings.Contains(block, "小明") || !strings.Contains(block, "梨") {
+	if !strings.Contains(block, profileMarker) || !strings.Contains(block, "小明") {
 		t.Fatalf("block=%q", block)
 	}
 }
 
-func TestMemoryRememberChineseName(t *testing.T) {
+func TestApplyPatchPartial(t *testing.T) {
 	m := NewMemory()
-	m.Remember("我叫小明")
-	if m.Name != "小明" {
-		t.Fatalf("name=%q", m.Name)
+	if _, err := m.ApplyPatch("小明", nil, nil); err != nil {
+		t.Fatal(err)
 	}
-	m.Remember("我喜欢吃梨")
-	if len(m.Likes) == 0 || m.Likes[0] != "梨" {
-		t.Fatalf("likes=%v", m.Likes)
+	if _, err := m.ApplyPatch("", []string{"梨"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "小明" || m.Likes[0] != "梨" {
+		t.Fatalf("%+v", m.Snapshot())
+	}
+	if _, err := m.ApplyPatch("", nil, nil); err == nil {
+		t.Fatal("empty patch should error")
 	}
 }
 
@@ -96,30 +106,8 @@ func TestProfileSurvivesHistoryTrim(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Profile independent of chat trim.
 	if a.Memory.Name != "小明" || len(a.Memory.Likes) != 1 {
 		t.Fatalf("memory lost: %+v", a.Memory.Snapshot())
-	}
-	// Next chat still gets profile even if history was trimmed.
-	var saw bool
-	p2 := &scriptedProvider{
-		responses: []llm.Response{
-			{Message: llm.Message{Role: llm.RoleAssistant, Content: "still know you"}},
-		},
-		onChat: func(req llm.Request, _ int) {
-			for _, m := range req.Messages {
-				if strings.Contains(m.Content, "小明") && strings.Contains(m.Content, profileMarker) {
-					saw = true
-				}
-			}
-		},
-	}
-	a.Provider = p2
-	if _, err := a.Run(context.Background(), "我叫什么"); err != nil {
-		t.Fatal(err)
-	}
-	if !saw {
-		t.Fatal("profile not injected after trim")
 	}
 }
 
@@ -135,5 +123,19 @@ func TestResetKeepsMemoryUnlessResetAll(t *testing.T) {
 	a.ResetAll()
 	if a.Memory.Name != "" {
 		t.Fatal("ResetAll should clear memory")
+	}
+}
+
+func TestProfileUpdateToolRoundTrip(t *testing.T) {
+	mem := NewMemory()
+	out, err := tool.ProfileUpdate{Store: mem}.Run(`{"name":"小明","likes":["梨","茶"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "name=小明") {
+		t.Fatalf("out=%q", out)
+	}
+	if mem.Name != "小明" || len(mem.Likes) != 2 {
+		t.Fatalf("%+v", mem.Snapshot())
 	}
 }

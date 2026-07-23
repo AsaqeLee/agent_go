@@ -113,7 +113,8 @@ func (m *Memory) SetField(field, value string) (string, error) {
 	}
 }
 
-// Remember stores free-form text (note + heuristics). Implements tool.MemoryStore.
+// Remember appends free-form text to notes only (no regex/heuristic field extraction).
+// Name/likes must be set via SetField or ApplyPatch (LLM tool arguments).
 func (m *Memory) Remember(text string) string {
 	if m == nil {
 		return "error: memory is nil"
@@ -122,9 +123,41 @@ func (m *Memory) Remember(text string) string {
 	if text == "" {
 		return "error: text is empty"
 	}
-	m.applyHeuristics(text)
 	m.addNote(text)
-	return fmt.Sprintf("noted into profile: %s | %s", clipRunes(text, 80), m.ShortStatus())
+	return fmt.Sprintf("noted into profile notes: %s | %s", clipRunes(text, 80), m.ShortStatus())
+}
+
+// ApplyPatch applies a structured multi-field update from the LLM (tool JSON args).
+// Empty name and empty slices are ignored so the model can send partial patches.
+func (m *Memory) ApplyPatch(name string, likes []string, notes []string) (string, error) {
+	if m == nil {
+		return "", fmt.Errorf("memory is nil")
+	}
+	changed := false
+	if n := strings.TrimSpace(name); n != "" {
+		m.setName(n)
+		changed = true
+	}
+	for _, like := range likes {
+		like = strings.TrimSpace(like)
+		if like == "" {
+			continue
+		}
+		m.addLike(like)
+		changed = true
+	}
+	for _, note := range notes {
+		note = strings.TrimSpace(note)
+		if note == "" {
+			continue
+		}
+		m.addNote(note)
+		changed = true
+	}
+	if !changed {
+		return "", fmt.Errorf("empty patch: set name and/or likes and/or notes")
+	}
+	return fmt.Sprintf("profile patch applied | %s", m.ShortStatus()), nil
 }
 
 // ShortStatus is a one-line profile summary for logs/CLI.
@@ -181,42 +214,6 @@ func (m *Memory) addNote(v string) {
 	if len(m.Notes) > maxNotes {
 		m.Notes = m.Notes[len(m.Notes)-maxNotes:]
 	}
-}
-
-func (m *Memory) applyHeuristics(text string) {
-	t := strings.TrimSpace(text)
-	for _, p := range []string{"我叫", "我是", "叫我", "名字是", "名字叫", "my name is ", "i am ", "i'm "} {
-		if i := indexFold(t, p); i >= 0 {
-			rest := strings.TrimSpace(t[i+len(p):])
-			rest = strings.Trim(rest, "，。,.!！？?：: ")
-			if cut := strings.IndexAny(rest, "，,。.;；和与 "); cut > 0 {
-				rest = rest[:cut]
-			}
-			rest = strings.TrimSpace(rest)
-			if rest != "" && utf8.RuneCountInString(rest) <= maxNameRunes {
-				m.setName(rest)
-				break
-			}
-		}
-	}
-	for _, p := range []string{"喜欢吃", "喜欢", "爱吃", "爱", "i like ", "i love "} {
-		if i := indexFold(t, p); i >= 0 {
-			rest := strings.TrimSpace(t[i+len(p):])
-			rest = strings.Trim(rest, "，。,.!！？? ")
-			if cut := strings.IndexAny(rest, "，,。.;；"); cut > 0 {
-				rest = rest[:cut]
-			}
-			rest = strings.TrimSpace(rest)
-			if rest != "" {
-				m.addLike(rest)
-				break
-			}
-		}
-	}
-}
-
-func indexFold(s, substr string) int {
-	return strings.Index(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func clipRunes(s string, max int) string {

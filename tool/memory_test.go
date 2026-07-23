@@ -8,6 +8,10 @@ import (
 type fakeStore struct {
 	remembered []string
 	fields     map[string]string
+	patches    int
+	lastName   string
+	lastLikes  []string
+	lastNotes  []string
 }
 
 func (f *fakeStore) Remember(text string) string {
@@ -21,6 +25,14 @@ func (f *fakeStore) SetField(field, value string) (string, error) {
 	}
 	f.fields[field] = value
 	return "set:" + field + "=" + value, nil
+}
+
+func (f *fakeStore) ApplyPatch(name string, likes, notes []string) (string, error) {
+	f.patches++
+	f.lastName = name
+	f.lastLikes = likes
+	f.lastNotes = notes
+	return "patched", nil
 }
 
 func TestEchoNoteUsesStore(t *testing.T) {
@@ -45,12 +57,23 @@ func TestMemorySetUsesStore(t *testing.T) {
 	}
 }
 
-func TestDefaultToolsIncludesMemorySet(t *testing.T) {
+func TestProfileUpdateUsesStore(t *testing.T) {
+	s := &fakeStore{}
+	out, err := ProfileUpdate{Store: s}.Run(`{"name":"小明","likes":["梨"],"notes":["住杭州"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "patched" || s.patches != 1 || s.lastName != "小明" || len(s.lastLikes) != 1 {
+		t.Fatalf("out=%q store=%+v", out, s)
+	}
+}
+
+func TestDefaultToolsIncludesProfileUpdate(t *testing.T) {
 	names := map[string]bool{}
 	for _, tl := range DefaultTools(nil) {
 		names[tl.Name()] = true
 	}
-	for _, want := range []string{"echo_note", "memory_set", "word_count"} {
+	for _, want := range []string{"profile_update", "memory_set", "echo_note", "word_count"} {
 		if !names[want] {
 			t.Fatalf("missing tool %s", want)
 		}

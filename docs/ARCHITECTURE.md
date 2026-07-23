@@ -49,7 +49,7 @@ Tool results are capped **before** they enter `messages` / session history so on
 | `MaxToolResultChars` | Cap each tool result (default 4096 runes) |
 | `MaxHistoryMessages` | After each successful `Run`, drop **oldest complete user-turns** until `len(history) <= N` (0 = unlimited). A user-turn is `user` + following messages until the next `user`. Never splits `tool_calls` from their `tool` replies. |
 | **Trim summary (lossy)** | Dropped turns are **not fully archived**. Only short high-signal facts become bullets in `[conversation_summary]` (≤12 bullets, ≤512 runes). |
-| **Structured Memory** | `Memory` fields: `name`, `likes[]`, `notes[]`. Written by tools `memory_set` / `echo_note`. Injected each Chat as `[user_profile]` system block. **Independent of chat history** (survives trim and `/new`). Bounded list sizes. |
+| **Structured Memory** | Fields `name` / `likes[]` / `notes[]`. **LLM writes fields via tool JSON** (`profile_update` multi-field, or `memory_set` one field). Runtime does **not** regex-parse free text into name/likes. `echo_note` only appends notes. Injected each Chat as `[user_profile]`. Survives trim and `/new`. |
 | `Stats()` / `/history` / `/memory` | Session size + profile field dump |CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
 
 ## Message roles
