@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func (f *fakeStore) ApplyPatch(name string, likes, notes []string) (string, erro
 
 func TestEchoNoteUsesStore(t *testing.T) {
 	s := &fakeStore{}
-	out, err := EchoNote{Store: s}.Run(`{"text":"hello"}`)
+	out, err := EchoNote{Store: s}.Run(context.Background(), `{"text":"hello"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +49,7 @@ func TestEchoNoteUsesStore(t *testing.T) {
 
 func TestMemorySetUsesStore(t *testing.T) {
 	s := &fakeStore{}
-	out, err := MemorySet{Store: s}.Run(`{"field":"name","value":"小明"}`)
+	out, err := MemorySet{Store: s}.Run(context.Background(), `{"field":"name","value":"小明"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestMemorySetUsesStore(t *testing.T) {
 
 func TestProfileUpdateUsesStore(t *testing.T) {
 	s := &fakeStore{}
-	out, err := ProfileUpdate{Store: s}.Run(`{"name":"小明","likes":["梨"],"notes":["住杭州"]}`)
+	out, err := ProfileUpdate{Store: s}.Run(context.Background(), `{"name":"小明","likes":["梨"],"notes":["住杭州"]}`)
 	if err != nil {
 		t.Fatal(err)
 	}

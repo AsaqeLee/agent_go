@@ -37,6 +37,14 @@ type Agent struct {
 	// MaxHistoryMessages caps session length after each successful Run.
 	// 0 means unlimited. Trimming drops oldest complete user-turns (never splits tool_calls from tool results).
 	MaxHistoryMessages int
+	// KeepRecentFullTurns: newest N user-turns keep full tool trajectories; older turns are folded.
+	// 0 → DefaultKeepRecentFullTurns (1); negative → disable folding.
+	KeepRecentFullTurns int
+	// DisableLLMSummary skips LLM compression of trim drafts (extractive only).
+	DisableLLMSummary bool
+	// SummaryMinDraftRunes: LLM compression only if extractive draft is at least this large.
+	// 0 → DefaultSummaryMinDraftRunes; negative → never LLM.
+	SummaryMinDraftRunes int
 	// Memory is structured durable fields (name/likes/notes). Survives history trim; injected each Chat.
 	// If nil, profile tools no-op / ephemeral depending on tool wiring.
 	Memory *Memory
@@ -98,9 +106,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		assistant := resp.Message
 		messages = append(messages, assistant)
 
-		// Case A: no tools → done; commit history, then optional session trim.
+		// Case A: no tools → done; commit history, then optional fold + session trim.
 		if len(assistant.ToolCalls) == 0 {
-			a.commitHistory(messages)
+			a.commitHistory(ctx, messages)
 			a.log("final: %s", assistant.Content)
 			return strings.TrimSpace(assistant.Content), nil
 		}
@@ -109,7 +117,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		a.log("tool_calls: %d", len(assistant.ToolCalls))
 		for _, tc := range assistant.ToolCalls {
 			a.log("  → %s(%s)", tc.Function.Name, tc.Function.Arguments)
-			raw := registry.Execute(tc.Function.Name, tc.Function.Arguments)
+			raw := registry.Execute(ctx, tc.Function.Name, tc.Function.Arguments)
 			result, truncated := a.capToolResult(raw)
 			if truncated {
 				a.log("  ← (truncated %d→%d chars) %s", utf8.RuneCountInString(raw), utf8.RuneCountInString(result), preview(result, 200))
@@ -129,14 +137,32 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	return "", fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
 }
 
-// commitHistory stores a successful run and trims old user-turns if over MaxHistoryMessages.
-// Dropped turns are folded into a sticky [conversation_summary] system message.
-func (a *Agent) commitHistory(messages []llm.Message) {
+// commitHistory stores a successful run, folds old tool trajectories, then trims by MaxHistoryMessages.
+// Dropped turns become a sticky [conversation_summary] (extractive, optionally LLM-compressed).
+func (a *Agent) commitHistory(ctx context.Context, messages []llm.Message) {
+	// Drop profile blocks from committed history; they are re-injected live each Chat.
+	messages = stripProfileMessages(messages)
+	var folded int
+	messages, folded = foldOldTurns(messages, a.KeepRecentFullTurns)
+	if folded > 0 {
+		a.log("history fold: collapsed tool trails in %d older user-turn(s)", folded)
+	}
 	a.history = messages
-	if dropped := a.trimHistory(); dropped > 0 {
+	if dropped := a.trimHistory(ctx); dropped > 0 {
 		a.log("history trim: dropped %d oldest user-turn(s), summary updated, now %d messages (%s)",
 			dropped, len(a.history), a.Stats().FormatStats())
 	}
+}
+
+func stripProfileMessages(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if isProfileMessage(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // Reset clears conversation history (not structured Memory). Next Run reseeds system prompt.

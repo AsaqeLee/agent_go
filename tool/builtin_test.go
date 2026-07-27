@@ -1,6 +1,9 @@
 package tool
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCalculator(t *testing.T) {
 	c := Calculator{}
@@ -14,7 +17,7 @@ func TestCalculator(t *testing.T) {
 		{`{"expression":"-2 + 5"}`, "3"},
 	}
 	for _, tc := range cases {
-		got, err := c.Run(tc.args)
+		got, err := c.Run(context.Background(), tc.args)
 		if err != nil {
 			t.Fatalf("Run(%s): %v", tc.args, err)
 		}
@@ -26,14 +29,14 @@ func TestCalculator(t *testing.T) {
 
 func TestRegistryUnknownTool(t *testing.T) {
 	r := NewRegistry(DefaultTools(nil))
-	out := r.Execute("nope", `{}`)
+	out := r.Execute(context.Background(), "nope", `{}`)
 	if out == "" || len(out) < 5 || out[:5] != "error" {
 		t.Fatalf("expected error string, got %q", out)
 	}
 }
 
 func TestEchoNoteEmpty(t *testing.T) {
-	_, err := EchoNote{}.Run(`{"text":"  "}`)
+	_, err := EchoNote{}.Run(context.Background(), `{"text":"  "}`)
 	if err == nil {
 		t.Fatal("expected error for empty note")
 	}

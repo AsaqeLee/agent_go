@@ -139,7 +139,7 @@ func TestSummarySurvivesFurtherTrim(t *testing.T) {
 	}
 	// max 4: drop old-q turn (2 msgs) => system, summary, new-q, new-a = 4, then rebuild summary
 	a := &Agent{MaxHistoryMessages: 4, history: msgs}
-	n := a.trimHistory()
+	n := a.trimHistory(context.Background())
 	if n < 1 {
 		t.Fatalf("expected drop, n=%d hist=%v", n, contents(a.history))
 	}

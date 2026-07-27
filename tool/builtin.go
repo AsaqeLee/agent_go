@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -21,7 +22,7 @@ func (GetTime) Parameters() map[string]any {
 		"properties": map[string]any{},
 	}
 }
-func (GetTime) Run(_ string) (string, error) {
+func (GetTime) Run(_ context.Context, _ string) (string, error) {
 	return time.Now().Format(time.RFC3339), nil
 }
 
@@ -50,7 +51,7 @@ type calcArgs struct {
 	Expression string `json:"expression"`
 }
 
-func (Calculator) Run(argsJSON string) (string, error) {
+func (Calculator) Run(_ context.Context, argsJSON string) (string, error) {
 	args, err := ParseArgs[calcArgs](argsJSON)
 	if err != nil {
 		return "", err
@@ -134,7 +135,7 @@ type noteArgs struct {
 	Text string `json:"text"`
 }
 
-func (e EchoNote) Run(argsJSON string) (string, error) {
+func (e EchoNote) Run(_ context.Context, argsJSON string) (string, error) {
 	args, err := ParseArgs[noteArgs](argsJSON)
 	if err != nil {
 		return "", err
@@ -183,7 +184,7 @@ type memorySetArgs struct {
 	Value string `json:"value"`
 }
 
-func (t MemorySet) Run(argsJSON string) (string, error) {
+func (t MemorySet) Run(_ context.Context, argsJSON string) (string, error) {
 	args, err := ParseArgs[memorySetArgs](argsJSON)
 	if err != nil {
 		return "", err
@@ -235,7 +236,7 @@ type profileUpdateArgs struct {
 	Notes []string `json:"notes"`
 }
 
-func (t ProfileUpdate) Run(argsJSON string) (string, error) {
+func (t ProfileUpdate) Run(_ context.Context, argsJSON string) (string, error) {
 	args, err := ParseArgs[profileUpdateArgs](argsJSON)
 	if err != nil {
 		return "", err
@@ -274,7 +275,7 @@ type wordCountArgs struct {
 	Text string `json:"text"`
 }
 
-func (WordCount) Run(argsJSON string) (string, error) {
+func (WordCount) Run(_ context.Context, argsJSON string) (string, error) {
 	args, err := ParseArgs[wordCountArgs](argsJSON)
 	if err != nil {
 		return "", err

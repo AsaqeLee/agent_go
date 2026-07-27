@@ -17,7 +17,10 @@
 - **多轮会话**：`Agent` 跨 `Run` 保留历史；`Reset` / CLI `/new` 开新会话
 - **工具结果截断**：写入 history 前按 rune 上限裁剪（默认 4096），防止撑爆 context
 - **会话裁剪 + 有损摘要**：`MaxHistoryMessages` 按轮裁剪；`[conversation_summary]` 为有界 bullet
-- **结构化 Memory**：`name` / `likes` / `notes` 由 LLM 通过 `profile_update`（或 `memory_set`）填 JSON 字段写入，**不用正则抽字段**；注入 `[user_profile]`，不随 trim 丢失；`/memory`
+- **结构化 Memory**：`name` / `likes` / `notes` 由 LLM 通过 `profile_update` 写入；默认落盘 `.agent_memory.json`；`/memory`
+- **旧轮轨迹折叠**：仅最近 N 轮保留完整 tool 链，更早轮只留 user+最终答
+- **Trim 摘要可选 LLM 压缩**：draft 足够长时再压一次，失败回退规则摘要
+- **Tool 支持 context**：可取消/超时
 - **OpenAI 兼容**：官方 API / Ollama / DeepSeek / 任意 `/v1/chat/completions`
 - **零第三方依赖**：仅 `net/http` + 标准库
 - **教学用内置工具**：`get_time` · `calculator` · `echo_note`
@@ -93,6 +96,9 @@ go run ./cmd/agent "帮我算 12 * 34"
 | `OPENAI_MODEL` | `gpt-4o-mini` | 模型名 |
 | `AGENT_VERBOSE` | `true` | 打印每一轮 tool call |
 | `AGENT_MAX_HISTORY_MESSAGES` | `40`（CLI） | 会话消息上限；`0` 不限制 |
+| `AGENT_MEMORY_PATH` | `.agent_memory.json` | 档案 JSON 路径；空字符串关闭落盘 |
+| `AGENT_KEEP_RECENT_FULL_TURNS` | `1` | 保留完整 tool 轨迹的最近轮数；`-1` 关闭折叠 |
+| `AGENT_DISABLE_LLM_SUMMARY` | `false` | `true` 时 trim 摘要不做 LLM 压缩 |
 
 ## 作为库使用
 

@@ -128,7 +128,7 @@ func TestResetKeepsMemoryUnlessResetAll(t *testing.T) {
 
 func TestProfileUpdateToolRoundTrip(t *testing.T) {
 	mem := NewMemory()
-	out, err := tool.ProfileUpdate{Store: mem}.Run(`{"name":"小明","likes":["梨","茶"]}`)
+	out, err := tool.ProfileUpdate{Store: mem}.Run(context.Background(), `{"name":"小明","likes":["梨","茶"]}`)
 	if err != nil {
 		t.Fatal(err)
 	}

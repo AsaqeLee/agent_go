@@ -1,12 +1,18 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
 )
+
+// DefaultMemoryPath is the default on-disk profile file (cwd-relative).
+const DefaultMemoryPath = ".agent_memory.json"
 
 // profileMarker prefixes the sticky system block injected from structured Memory.
 const profileMarker = "[user_profile]"
@@ -21,15 +27,69 @@ const (
 
 // Memory is a structured, bounded profile that survives history trim.
 // It is NOT a chat transcript: only a few fields, injected into the system prompt.
+// Optional Path enables JSON persistence across process restarts.
 type Memory struct {
-	Name  string
-	Likes []string
-	Notes []string
+	Name  string   `json:"name,omitempty"`
+	Likes []string `json:"likes,omitempty"`
+	Notes []string `json:"notes,omitempty"`
+
+	// Path is the JSON file for Load/Save. Empty disables disk I/O.
+	// Not serialized into the file itself.
+	Path string `json:"-"`
 }
 
-// NewMemory returns an empty profile store.
+// NewMemory returns an empty profile store (no disk until Path is set).
 func NewMemory() *Memory {
 	return &Memory{}
+}
+
+// LoadMemory reads profile fields from path. Missing file → empty Memory with Path set.
+func LoadMemory(path string) (*Memory, error) {
+	m := &Memory{Path: path}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return m, nil
+		}
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return m, nil
+	}
+	if err := json.Unmarshal(data, m); err != nil {
+		return nil, fmt.Errorf("memory load: %w", err)
+	}
+	m.Path = path
+	return m, nil
+}
+
+// Save writes profile fields to Path. No-op if Path is empty or m is nil.
+func (m *Memory) Save() error {
+	if m == nil || m.Path == "" {
+		return nil
+	}
+	if dir := filepath.Dir(m.Path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(struct {
+		Name  string   `json:"name,omitempty"`
+		Likes []string `json:"likes,omitempty"`
+		Notes []string `json:"notes,omitempty"`
+	}{Name: m.Name, Likes: m.Likes, Notes: m.Notes}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(m.Path, data, 0o600)
+}
+
+func (m *Memory) persist() {
+	if m == nil || m.Path == "" {
+		return
+	}
+	_ = m.Save() // best-effort; tools still succeed if disk fails
 }
 
 // Empty reports whether any field is set.
@@ -40,7 +100,7 @@ func (m *Memory) Empty() bool {
 	return m.Name == "" && len(m.Likes) == 0 && len(m.Notes) == 0
 }
 
-// Clear wipes all fields.
+// Clear wipes all fields and persists if Path is set.
 func (m *Memory) Clear() {
 	if m == nil {
 		return
@@ -48,6 +108,7 @@ func (m *Memory) Clear() {
 	m.Name = ""
 	m.Likes = nil
 	m.Notes = nil
+	m.persist()
 }
 
 // Snapshot returns a copy for CLI display.
@@ -101,12 +162,15 @@ func (m *Memory) SetField(field, value string) (string, error) {
 	switch field {
 	case "name":
 		m.setName(value)
+		m.persist()
 		return fmt.Sprintf("profile updated: name=%s", m.Name), nil
 	case "like", "likes":
 		m.addLike(value)
+		m.persist()
 		return fmt.Sprintf("profile updated: likes=%s", strings.Join(m.Likes, "; ")), nil
 	case "note", "notes":
 		m.addNote(value)
+		m.persist()
 		return fmt.Sprintf("profile updated: note recorded (%d notes)", len(m.Notes)), nil
 	default:
 		return "", fmt.Errorf("unknown field %q (want name|like|note)", field)
@@ -124,6 +188,7 @@ func (m *Memory) Remember(text string) string {
 		return "error: text is empty"
 	}
 	m.addNote(text)
+	m.persist()
 	return fmt.Sprintf("noted into profile notes: %s | %s", clipRunes(text, 80), m.ShortStatus())
 }
 
@@ -157,6 +222,7 @@ func (m *Memory) ApplyPatch(name string, likes []string, notes []string) (string
 	if !changed {
 		return "", fmt.Errorf("empty patch: set name and/or likes and/or notes")
 	}
+	m.persist()
 	return fmt.Sprintf("profile patch applied | %s", m.ShortStatus()), nil
 }
 

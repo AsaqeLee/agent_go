@@ -9,6 +9,7 @@
 //	OPENAI_MODEL                default gpt-4o-mini
 //	AGENT_VERBOSE               set to 0/false to hide turn logs (default: on)
 //	AGENT_MAX_HISTORY_MESSAGES  session message cap; 0 = unlimited (default: 40)
+//	AGENT_MEMORY_PATH           profile JSON path (default .agent_memory.json; empty disables)
 //
 // Interactive: quit | /new | /new all | /history [full] | /memory | /memory clear
 package main
@@ -46,14 +47,25 @@ func main() {
 		env("OPENAI_MODEL", "gpt-4o-mini"),
 	)
 
-	mem := agent.NewMemory()
+	memPath := env("AGENT_MEMORY_PATH", agent.DefaultMemoryPath)
+	mem, err := agent.LoadMemory(memPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "memory load %s: %v\n", memPath, err)
+		os.Exit(1)
+	}
+	if !mem.Empty() {
+		fmt.Fprintf(os.Stderr, "loaded profile from %s (%s)\n", memPath, mem.ShortStatus())
+	}
+
 	a := &agent.Agent{
-		Provider:           provider,
-		Memory:             mem,
-		Tools:              tool.DefaultTools(mem),
-		MaxTurns:           8,
-		MaxHistoryMessages: envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
-		Verbose:            envBool("AGENT_VERBOSE", true),
+		Provider:            provider,
+		Memory:              mem,
+		Tools:               tool.DefaultTools(mem),
+		MaxTurns:            8,
+		MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
+		KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
+		DisableLLMSummary:   envBool("AGENT_DISABLE_LLM_SUMMARY", false),
+		Verbose:             envBool("AGENT_VERBOSE", true),
 	}
 
 	if len(os.Args) > 1 {
@@ -66,8 +78,8 @@ func main() {
 	}
 
 	fmt.Println("agent_go — quit | /new | /new all | /history [full] | /memory | /memory clear")
-	fmt.Printf("model=%s base=%s max_history_messages=%d\n",
-		provider.Model, provider.BaseURL, a.MaxHistoryMessages)
+	fmt.Printf("model=%s base=%s max_history_messages=%d memory=%s\n",
+		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath)
 
 	in := bufio.NewScanner(os.Stdin)
 	for {

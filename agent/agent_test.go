@@ -233,7 +233,7 @@ func (longBlobTool) Description() string { return "returns a long string" }
 func (longBlobTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
-func (t longBlobTool) Run(string) (string, error) {
+func (t longBlobTool) Run(context.Context, string) (string, error) {
 	return strings.Repeat("你", t.n), nil // multi-byte runes
 }
 

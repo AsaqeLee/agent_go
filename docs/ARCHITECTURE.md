@@ -49,7 +49,10 @@ Tool results are capped **before** they enter `messages` / session history so on
 | `MaxToolResultChars` | Cap each tool result (default 4096 runes) |
 | `MaxHistoryMessages` | After each successful `Run`, drop **oldest complete user-turns** until `len(history) <= N` (0 = unlimited). A user-turn is `user` + following messages until the next `user`. Never splits `tool_calls` from their `tool` replies. |
 | **Trim summary (lossy)** | Dropped turns are **not fully archived**. Only short high-signal facts become bullets in `[conversation_summary]` (≤12 bullets, ≤512 runes). |
-| **Structured Memory** | Fields `name` / `likes[]` / `notes[]`. **LLM writes fields via tool JSON** (`profile_update` multi-field, or `memory_set` one field). Runtime does **not** regex-parse free text into name/likes. `echo_note` only appends notes. Injected each Chat as `[user_profile]`. Survives trim and `/new`. |
+| **Structured Memory** | Fields `name` / `likes[]` / `notes[]`. **LLM writes via tool JSON** (`profile_update` / `memory_set`). Optional disk: `.agent_memory.json`. Injected as `[user_profile]`. Survives trim and `/new`. |
+| **Trajectory fold** | Keep only N newest user-turns with full tool chains (`KeepRecentFullTurns`, default 1); older turns collapse to `user` + final `assistant`. |
+| **LLM summary (optional)** | After trim, extractive draft may be compressed via a tool-less LLM call when draft is large; failure falls back to extractive. |
+| **Tool ctx** | `Tool.Run(ctx, args)` — cancellation propagates from Agent.Run. |
 | `Stats()` / `/history` / `/memory` | Session size + profile field dump |CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
 
 ## Message roles

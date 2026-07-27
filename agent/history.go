@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -126,7 +127,7 @@ func (s HistoryStats) FormatStats() string {
 // facts (name, preferences, tool notes) survive context pressure.
 //
 // Returns how many user-turns were dropped. MaxHistoryMessages <= 0 means no trim.
-func (a *Agent) trimHistory() int {
+func (a *Agent) trimHistory(ctx context.Context) int {
 	if a.MaxHistoryMessages <= 0 || len(a.history) <= a.MaxHistoryMessages {
 		return 0
 	}
@@ -138,7 +139,7 @@ func (a *Agent) trimHistory() int {
 		return 0
 	}
 
-	summary := buildConversationSummary(prevBody, droppedMsgs)
+	summary := a.finalizeSummary(ctx, prevBody, droppedMsgs)
 	a.history = upsertSummary(trimmed, summary)
 
 	// Inserting a new summary may push us 1 over the cap; drop more turns if needed.
@@ -150,7 +151,7 @@ func (a *Agent) trimHistory() int {
 			break
 		}
 		droppedTurns += n
-		summary = buildConversationSummary(prevBody, moreDropped)
+		summary = a.finalizeSummary(ctx, prevBody, moreDropped)
 		a.history = upsertSummary(next, summary)
 	}
 	return droppedTurns

@@ -3,6 +3,7 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -18,7 +19,8 @@ type Tool interface {
 	// Parameters is a JSON Schema object describing arguments.
 	Parameters() map[string]any
 	// Run executes the tool with the model-provided JSON arguments.
-	Run(argsJSON string) (string, error)
+	// ctx is honored for cancellation/timeouts where the tool does I/O.
+	Run(ctx context.Context, argsJSON string) (string, error)
 }
 
 // Defs converts tools into definitions sent to the LLM.
@@ -59,12 +61,18 @@ func NewRegistry(tools []Tool) *Registry {
 }
 
 // Execute runs a tool by name. Unknown tools return an error string (never panic).
-func (r *Registry) Execute(name, argsJSON string) string {
+func (r *Registry) Execute(ctx context.Context, name, argsJSON string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
 	t, ok := r.byName[name]
 	if !ok {
 		return fmt.Sprintf("error: unknown tool %q", name)
 	}
-	result, err := t.Run(argsJSON)
+	result, err := t.Run(ctx, argsJSON)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)
 	}
