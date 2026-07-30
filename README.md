@@ -21,6 +21,7 @@
 - **旧轮轨迹折叠**：仅最近 N 轮保留完整 tool 链，更早轮只留 user+最终答
 - **Trim 摘要可选 LLM 压缩**：draft 足够长时再压一次，失败回退规则摘要
 - **Tool 支持 context**：可取消/超时
+- **最小异步任务**：进程内队列 + Worker；`task submit` / 交互 `/task …`
 - **OpenAI 兼容**：官方 API / Ollama / DeepSeek / 任意 `/v1/chat/completions`
 - **零第三方依赖**：仅 `net/http` + 标准库
 - **教学用内置工具**：`get_time` · `calculator` · `echo_note`
@@ -66,8 +67,14 @@ cp .env.example .env
 go run ./cmd/agent "现在几点？请用工具查"
 go run ./cmd/agent "帮我算 123 * 456"
 
-# 交互模式（多轮会话；/new 清空，/history 查看）
+# 交互模式（多轮会话 + 异步任务）
 go run ./cmd/agent
+# /task submit 帮我算 12*34
+# /task list
+# /task wait <id>
+
+# 异步任务（同进程 submit+wait；状态仅内存）
+go run ./cmd/agent task submit "帮我算 123 * 456"
 
 # 编译二进制
 go build -o bin/agent ./cmd/agent

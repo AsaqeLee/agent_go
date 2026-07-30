@@ -1,17 +1,18 @@
 // Command agent is a minimal CLI for the educational Go agent.
 //
-//	Agent = LLM (brain) + Tools (hands) + Loop (scheduler) + structured Memory
+//	Agent = LLM + Tools + Loop + Memory + optional async tasks
 //
-// Environment (shell export, or project .env — see .env.example):
+// Sync usage:
 //
-//	OPENAI_API_KEY              API key (optional for some local servers)
-//	OPENAI_BASE_URL             default https://api.openai.com/v1
-//	OPENAI_MODEL                default gpt-4o-mini
-//	AGENT_VERBOSE               set to 0/false to hide turn logs (default: on)
-//	AGENT_MAX_HISTORY_MESSAGES  session message cap; 0 = unlimited (default: 40)
-//	AGENT_MEMORY_PATH           profile JSON path (default .agent_memory.json; empty disables)
+//	go run ./cmd/agent "现在几点？"
+//	go run ./cmd/agent                 # interactive REPL
 //
-// Interactive: quit | /new | /new all | /history [full] | /memory | /memory clear
+// Async tasks (in-process queue + workers; state is not shared across processes):
+//
+//	go run ./cmd/agent task submit "调研并总结…"     # submit + wait
+//	go run ./cmd/agent task submit --no-wait "…"     # print id (use interactive to poll)
+//
+// Interactive: quit | /new | /memory | /history | /task …
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 
 	"github.com/asaqelee/agent_go/agent"
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/task"
 	"github.com/asaqelee/agent_go/tool"
 )
 
@@ -41,33 +43,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	provider := llm.NewOpenAI(
-		env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-		env("OPENAI_API_KEY", ""),
-		env("OPENAI_MODEL", "gpt-4o-mini"),
-	)
-
-	memPath := env("AGENT_MEMORY_PATH", agent.DefaultMemoryPath)
-	mem, err := agent.LoadMemory(memPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "memory load %s: %v\n", memPath, err)
-		os.Exit(1)
-	}
-	if !mem.Empty() {
-		fmt.Fprintf(os.Stderr, "loaded profile from %s (%s)\n", memPath, mem.ShortStatus())
+	// Subcommand: task …
+	if len(os.Args) > 1 && os.Args[1] == "task" {
+		os.Exit(runTaskCLI(ctx, os.Args[2:]))
 	}
 
-	a := &agent.Agent{
-		Provider:            provider,
-		Memory:              mem,
-		Tools:               tool.DefaultTools(mem),
-		MaxTurns:            8,
-		MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
-		KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
-		DisableLLMSummary:   envBool("AGENT_DISABLE_LLM_SUMMARY", false),
-		Verbose:             envBool("AGENT_VERBOSE", true),
-	}
+	provider, mem, memPath := buildProviderAndMemory()
+	a := newSyncAgent(provider, mem)
 
+	// One-shot sync question
 	if len(os.Args) > 1 {
 		question := strings.Join(os.Args[1:], " ")
 		if err := ask(ctx, a, question); err != nil {
@@ -77,11 +61,35 @@ func main() {
 		return
 	}
 
-	fmt.Println("agent_go — quit | /new | /new all | /history [full] | /memory | /memory clear")
-	fmt.Printf("model=%s base=%s max_history_messages=%d memory=%s\n",
-		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath)
+	// Interactive: long-lived task manager in the same process.
+	mgr := task.NewManager(ctx, func(taskCtx context.Context, goal string) (string, error) {
+		// Fresh agent per task (empty chat history); shared durable memory path.
+		mem2 := mem
+		if memPath != "" {
+			if m, err := agent.LoadMemory(memPath); err == nil {
+				mem2 = m
+			}
+		}
+		ag := newSyncAgent(provider, mem2)
+		ag.Verbose = envBool("AGENT_VERBOSE", false)
+		return ag.Run(taskCtx, goal)
+	}, task.Options{
+		Workers:   envInt("AGENT_TASK_WORKERS", 2),
+		QueueSize: envInt("AGENT_TASK_QUEUE", 64),
+	})
+	defer mgr.Stop()
+
+	fmt.Println("agent_go — sync chat + async tasks")
+	fmt.Println("  chat: type a message | /new | /new all | /history [full] | /memory | /memory clear")
+	fmt.Println("  task: /task submit <goal> | /task list | /task status <id> | /task wait <id> | /task cancel <id>")
+	fmt.Printf("model=%s base=%s max_history_messages=%d memory=%s workers=%d\n",
+		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, envInt("AGENT_TASK_WORKERS", 2))
 
 	in := bufio.NewScanner(os.Stdin)
+	// Allow long goals / pastes
+	buf := make([]byte, 0, 64*1024)
+	in.Buffer(buf, 1024*1024)
+
 	for {
 		fmt.Print("\n> ")
 		if !in.Scan() {
@@ -112,6 +120,9 @@ func main() {
 			a.ResetMemory()
 			fmt.Println("(profile memory cleared)")
 			continue
+		case line == "/task" || strings.HasPrefix(line, "/task "):
+			handleInteractiveTask(ctx, mgr, strings.TrimSpace(strings.TrimPrefix(line, "/task")))
+			continue
 		}
 		if err := ask(ctx, a, line); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -120,6 +131,115 @@ func main() {
 	if err := in.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func buildProviderAndMemory() (*llm.OpenAI, *agent.Memory, string) {
+	provider := llm.NewOpenAI(
+		env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		env("OPENAI_API_KEY", ""),
+		env("OPENAI_MODEL", "gpt-4o-mini"),
+	)
+	memPath := env("AGENT_MEMORY_PATH", agent.DefaultMemoryPath)
+	mem, err := agent.LoadMemory(memPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "memory load %s: %v\n", memPath, err)
+		os.Exit(1)
+	}
+	if !mem.Empty() {
+		fmt.Fprintf(os.Stderr, "loaded profile from %s (%s)\n", memPath, mem.ShortStatus())
+	}
+	return provider, mem, memPath
+}
+
+func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory) *agent.Agent {
+	return &agent.Agent{
+		Provider:            provider,
+		Memory:              mem,
+		Tools:               tool.DefaultTools(mem),
+		MaxTurns:            envInt("AGENT_MAX_TURNS", 8),
+		MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
+		KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
+		DisableLLMSummary:   envBool("AGENT_DISABLE_LLM_SUMMARY", false),
+		Verbose:             envBool("AGENT_VERBOSE", true),
+	}
+}
+
+func handleInteractiveTask(ctx context.Context, mgr *task.Manager, rest string) {
+	if rest == "" || rest == "help" {
+		fmt.Println("usage: /task submit <goal> | list | status <id> | wait <id> | cancel <id>")
+		return
+	}
+	parts := strings.Fields(rest)
+	cmd := parts[0]
+	args := strings.TrimSpace(rest[len(cmd):])
+
+	switch cmd {
+	case "submit", "run":
+		if args == "" {
+			fmt.Println("usage: /task submit <goal>")
+			return
+		}
+		tk, err := mgr.Submit(args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return
+		}
+		fmt.Printf("submitted id=%s status=%s (use /task wait %s or /task status %s)\n",
+			tk.ID, tk.Status, tk.ID, tk.ID)
+
+	case "list":
+		list := mgr.List()
+		if len(list) == 0 {
+			fmt.Println("(no tasks)")
+			return
+		}
+		for _, tk := range list {
+			printTaskLine(tk)
+		}
+
+	case "status", "get":
+		id := strings.Fields(args)
+		if len(id) < 1 {
+			fmt.Println("usage: /task status <id>")
+			return
+		}
+		tk, ok := mgr.Get(id[0])
+		if !ok {
+			fmt.Fprintf(os.Stderr, "error: not found %s\n", id[0])
+			return
+		}
+		printTask(tk)
+
+	case "wait":
+		id := strings.Fields(args)
+		if len(id) < 1 {
+			fmt.Println("usage: /task wait <id>")
+			return
+		}
+		fmt.Printf("waiting for %s …\n", id[0])
+		tk, err := mgr.Wait(ctx, id[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return
+		}
+		printTask(tk)
+
+	case "cancel":
+		id := strings.Fields(args)
+		if len(id) < 1 {
+			fmt.Println("usage: /task cancel <id>")
+			return
+		}
+		tk, err := mgr.Cancel(id[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return
+		}
+		printTask(tk)
+
+	default:
+		fmt.Printf("unknown /task command %q\n", cmd)
 	}
 }
 
@@ -162,7 +282,7 @@ func printHistory(a *agent.Agent, full bool) {
 		fmt.Println("profile: " + a.Memory.ShortStatus())
 	}
 	if !full {
-		fmt.Println("(list preview ≤120 runes/msg; summary/profile blocks full in messages when present; /history full)")
+		fmt.Println("(list preview ≤120 runes/msg; summary/profile full; /history full)")
 	}
 	if len(h) == 0 {
 		fmt.Println("(empty session)")

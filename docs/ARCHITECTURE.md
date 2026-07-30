@@ -53,7 +53,15 @@ Tool results are capped **before** they enter `messages` / session history so on
 | **Trajectory fold** | Keep only N newest user-turns with full tool chains (`KeepRecentFullTurns`, default 1); older turns collapse to `user` + final `assistant`. |
 | **LLM summary (optional)** | After trim, extractive draft may be compressed via a tool-less LLM call when draft is large; failure falls back to extractive. |
 | **Tool ctx** | `Tool.Run(ctx, args)` — cancellation propagates from Agent.Run. |
-| `Stats()` / `/history` / `/memory` | Session size + profile field dump |CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
+| `Stats()` / `/history` / `/memory` | Session size + profile field dump |
+| **Async tasks** | Package `task`: in-process queue + workers (`queued→running→succeeded\|failed\|cancelled`). Each job runs a **fresh** Agent. State is **process-local** (not a DB). |
+
+CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
+
+```text
+go run ./cmd/agent task submit "goal"     # submit + wait in one process
+go run ./cmd/agent                        # /task submit|list|status|wait|cancel
+```
 
 ## Message roles
 
@@ -72,8 +80,9 @@ Tool results are capped **before** they enter `messages` / session history so on
 4. **[`agent/agent.go`](../agent/agent.go)** — the loop (most important)
 5. [`llm/openai.go`](../llm/openai.go) — HTTP to `/v1/chat/completions`
 6. [`cmd/agent/main.go`](../cmd/agent/main.go) — CLI assembly
+7. [`task/task.go`](../task/task.go) — minimal async manager
 
 ## Intentionally out of scope
 
-Streaming, long-term memory / RAG, multi-agent handoffs, MCP, sandboxes, and permission UIs.
+Streaming, durable task DB across processes, RAG, multi-agent handoffs, MCP, sandboxes, and permission UIs.
 Master the loop first; those are plugins on top.
