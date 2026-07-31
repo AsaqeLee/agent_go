@@ -49,7 +49,8 @@ func main() {
 	}
 
 	provider, mem, memPath := buildProviderAndMemory()
-	a := newSyncAgent(provider, mem)
+	docsRoot := resolveDocsRoot()
+	a := newSyncAgent(provider, mem, docsRoot)
 
 	// One-shot sync question
 	if len(os.Args) > 1 {
@@ -70,7 +71,7 @@ func main() {
 				mem2 = m
 			}
 		}
-		ag := newSyncAgent(provider, mem2)
+		ag := newSyncAgent(provider, mem2, docsRoot)
 		ag.Verbose = envBool("AGENT_VERBOSE", false)
 		return ag.Run(taskCtx, goal)
 	}, task.Options{
@@ -79,11 +80,14 @@ func main() {
 	})
 	defer mgr.Stop()
 
-	fmt.Println("agent_go — sync chat + async tasks")
-	fmt.Println("  chat: type a message | /new | /new all | /history [full] | /memory | /memory clear")
-	fmt.Println("  task: /task submit <goal> | /task list | /task status <id> | /task wait <id> | /task cancel <id>")
-	fmt.Printf("model=%s base=%s max_history_messages=%d memory=%s workers=%d\n",
-		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, envInt("AGENT_TASK_WORKERS", 2))
+	fmt.Println("agent_go — chat + memory + knowledge base + async tasks")
+	fmt.Println("  chat: message | /new | /new all | /history [full] | /memory | /memory clear")
+	fmt.Println("  task: /task submit|list|status|wait|cancel")
+	fmt.Printf("model=%s base=%s max_history=%d memory=%s docs=%s workers=%d\n",
+		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displayDocs(docsRoot), envInt("AGENT_TASK_WORKERS", 2))
+	if docsRoot != "" {
+		fmt.Println("  kb demo: try「年假有多少天？请先 search_docs 再回答」")
+	}
 
 	in := bufio.NewScanner(os.Stdin)
 	// Allow long goals / pastes
@@ -152,17 +156,63 @@ func buildProviderAndMemory() (*llm.OpenAI, *agent.Memory, string) {
 	return provider, mem, memPath
 }
 
-func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory) *agent.Agent {
-	return &agent.Agent{
+func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string) *agent.Agent {
+	a := &agent.Agent{
 		Provider:            provider,
 		Memory:              mem,
-		Tools:               tool.DefaultTools(mem),
+		Tools:               tool.DefaultTools(mem, docsRoot),
 		MaxTurns:            envInt("AGENT_MAX_TURNS", 8),
 		MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
 		KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
 		DisableLLMSummary:   envBool("AGENT_DISABLE_LLM_SUMMARY", false),
 		Verbose:             envBool("AGENT_VERBOSE", true),
 	}
+	if docsRoot != "" {
+		// Explicit system prompt merges profile + sandboxed KB guidance.
+		a.SystemPrompt = defaultPromptWithDocs(docsRoot)
+	}
+	return a
+}
+
+func defaultPromptWithDocs(docsRoot string) string {
+	return strings.TrimSpace(`You are a helpful assistant with tools.
+- Use tools when they help answer accurately (time, math, profile, local docs).
+- Prefer calculator for arithmetic; do not guess multiplications.
+
+Durable user profile (survives chat history trim):
+- When the user states durable facts about themselves, extract fields and call profile_update (or memory_set).
+- echo_note only appends free-text notes. Never invent profile data.
+- Trust [user_profile] over older chat when they conflict.
+
+Local knowledge base (sandboxed directory at ` + docsRoot + `):
+- Tools: list_docs, search_docs, read_doc. Always search or list before answering policy/FAQ questions from docs.
+- Cite file paths from tool results. If docs lack the answer, say you do not know from the knowledge base.
+- Never attempt path traversal; only relative paths under the docs root.
+
+- After tools return, give a concise final answer to the user.
+- Reply in the same language the user uses.`)
+}
+
+// resolveDocsRoot returns AGENT_DOCS_ROOT, or examples/kb if present in cwd.
+func resolveDocsRoot() string {
+	if v := strings.TrimSpace(os.Getenv("AGENT_DOCS_ROOT")); v != "" {
+		if st, err := os.Stat(v); err == nil && st.IsDir() {
+			return v
+		}
+		fmt.Fprintf(os.Stderr, "warning: AGENT_DOCS_ROOT=%q not usable, kb tools disabled\n", v)
+		return ""
+	}
+	if st, err := os.Stat("examples/kb"); err == nil && st.IsDir() {
+		return "examples/kb"
+	}
+	return ""
+}
+
+func displayDocs(root string) string {
+	if root == "" {
+		return "(off)"
+	}
+	return root
 }
 
 func handleInteractiveTask(ctx context.Context, mgr *task.Manager, rest string) {

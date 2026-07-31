@@ -37,7 +37,8 @@
 5. ~~结构化 Memory + 落盘~~（`profile_update` + `.agent_memory.json`）  
 6. ~~轨迹折叠 / Tool ctx / LLM trim 摘要~~  
 7. ~~最小异步任务~~（`task` 包：queued→running→终态）  
-8. 流式输出、持久化任务库、MCP、多 Agent（进阶）  
+8. ~~本地知识库沙箱~~（`list_docs` / `search_docs` / `read_doc` + `examples/kb`）  
+9. 流式输出、向量 RAG、持久化任务库、MCP、多 Agent（进阶）  
 
 ## 读源码顺序
 

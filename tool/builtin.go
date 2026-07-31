@@ -285,10 +285,11 @@ func (WordCount) Run(_ context.Context, argsJSON string) (string, error) {
 }
 
 // DefaultTools returns the built-in teaching toolset.
-// Pass a MemoryStore (e.g. *agent.Memory) so echo_note / memory_set persist profile fields.
+// Pass a MemoryStore (e.g. *agent.Memory) so profile tools persist fields.
 // store may be nil (notes become ephemeral).
-func DefaultTools(store MemoryStore) []Tool {
-	return []Tool{
+// docsRoot enables list_docs/read_doc/search_docs when non-empty and valid.
+func DefaultTools(store MemoryStore, docsRoot string) []Tool {
+	tools := []Tool{
 		GetTime{},
 		Calculator{},
 		ProfileUpdate{Store: store},
@@ -296,4 +297,8 @@ func DefaultTools(store MemoryStore) []Tool {
 		EchoNote{Store: store},
 		WordCount{},
 	}
+	if docsRoot != "" {
+		tools = append(tools, KnowledgeTools(docsRoot)...)
+	}
+	return tools
 }

@@ -71,12 +71,26 @@ func TestProfileUpdateUsesStore(t *testing.T) {
 
 func TestDefaultToolsIncludesProfileUpdate(t *testing.T) {
 	names := map[string]bool{}
-	for _, tl := range DefaultTools(nil) {
+	for _, tl := range DefaultTools(nil, "") {
 		names[tl.Name()] = true
 	}
 	for _, want := range []string{"profile_update", "memory_set", "echo_note", "word_count"} {
 		if !names[want] {
 			t.Fatalf("missing tool %s", want)
+		}
+	}
+	// KB tools only when docsRoot is valid
+	if names["list_docs"] {
+		t.Fatal("list_docs should not be registered without docsRoot")
+	}
+	dir := t.TempDir()
+	withKB := map[string]bool{}
+	for _, tl := range DefaultTools(nil, dir) {
+		withKB[tl.Name()] = true
+	}
+	for _, want := range []string{"list_docs", "read_doc", "search_docs"} {
+		if !withKB[want] {
+			t.Fatalf("missing kb tool %s", want)
 		}
 	}
 }

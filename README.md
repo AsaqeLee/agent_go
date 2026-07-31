@@ -3,39 +3,41 @@
 [![CI](https://github.com/asaqelee/agent_go/actions/workflows/ci.yml/badge.svg)](https://github.com/asaqelee/agent_go/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev/)
 
-用 **纯 Go 标准库** 实现的最小 AI Agent：可读、可跑、可改。
+用 **纯 Go 标准库** 实现的 AI Agent 运行时：可读、可跑、可改。
 
-> **Agent = LLM（大脑）+ Tools（手脚）+ Loop（调度循环）**
+> **Agent = LLM（大脑）+ Tools（手脚）+ Loop（调度循环）**  
+> 另加：会话上下文策略 · 结构化 Memory · 本地知识库沙箱 · 进程内异步任务
 
-适合作为学习材料：理解 tool calling 与 agent loop 后，再去读 Dive / SwarmGo 等更大项目会轻松很多。
+适合作为学习材料：理解 tool calling 与 agent loop 后，再去读更大项目会轻松很多。
 
 ---
 
 ## 特性
 
-- **完整 Agent Loop**：`LLM → tool_calls → 执行 → 回写 → 再 LLM`
-- **多轮会话**：`Agent` 跨 `Run` 保留历史；`Reset` / CLI `/new` 开新会话
-- **工具结果截断**：写入 history 前按 rune 上限裁剪（默认 4096），防止撑爆 context
-- **会话裁剪 + 有损摘要**：`MaxHistoryMessages` 按轮裁剪；`[conversation_summary]` 为有界 bullet
-- **结构化 Memory**：`name` / `likes` / `notes` 由 LLM 通过 `profile_update` 写入；默认落盘 `.agent_memory.json`；`/memory`
-- **旧轮轨迹折叠**：仅最近 N 轮保留完整 tool 链，更早轮只留 user+最终答
-- **Trim 摘要可选 LLM 压缩**：draft 足够长时再压一次，失败回退规则摘要
-- **Tool 支持 context**：可取消/超时
-- **最小异步任务**：进程内队列 + Worker；`task submit` / 交互 `/task …`
-- **OpenAI 兼容**：官方 API / Ollama / DeepSeek / 任意 `/v1/chat/completions`
-- **零第三方依赖**：仅 `net/http` + 标准库
-- **教学用内置工具**：`get_time` · `calculator` · `echo_note`
-- **可测**：mock Provider 覆盖 loop / 工具链 / MaxTurns
-- **中文学习文档**：[docs/LEARNING.md](docs/LEARNING.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+| 能力 | 说明 |
+|------|------|
+| **Agent Loop** | `LLM → tool_calls → 执行 → 回写 → 再 LLM`，`MaxTurns` 防死循环 |
+| **多轮会话** | 跨 `Run` 保留历史；`Reset` / CLI `/new` |
+| **工具结果截断** | 写入 history 前按 rune 上限裁剪（默认 4096） |
+| **会话裁剪 + 有损摘要** | 按完整 user-turn 裁；`[conversation_summary]` 有界 bullets |
+| **轨迹折叠** | 仅最近 N 轮保留完整 tool 链 |
+| **结构化 Memory** | `name` / `likes` / `notes` 由 LLM 经 `profile_update` 写入；落盘 + `[user_profile]` |
+| **本地知识库** | `list_docs` / `search_docs` / `read_doc`，目录沙箱，示例语料 `examples/kb` |
+| **异步任务** | 进程内队列 + Worker；`task submit` / 交互 `/task …` |
+| **OpenAI 兼容** | 官方 API / Ollama / DeepSeek 等 `/v1/chat/completions` |
+| **零第三方依赖** | 仅 `net/http` + 标准库 |
+| **可测** | mock Provider 覆盖 loop / 工具链 / MaxTurns / 知识库沙箱 |
 
 ## 仓库结构
 
 ```
 .
-├── agent/           # Agent loop（核心）
+├── agent/           # Agent loop、会话策略、Memory
 ├── llm/             # 消息类型 + OpenAI 兼容 Provider
-├── tool/            # Tool 接口、注册表、内置工具
+├── tool/            # Tool 接口、内置工具、知识库工具
+├── task/            # 进程内异步任务队列
 ├── cmd/agent/       # CLI 入口
+├── examples/kb/     # 本地知识库示例语料
 ├── docs/            # 架构与学习指南
 ├── .github/workflows/ci.yml
 └── README.md
@@ -46,7 +48,7 @@
 ### 要求
 
 - Go 1.22+
-- 任意 OpenAI 兼容接口的 API Key（或本机 Ollama）
+- 任意 OpenAI 兼容接口的 API Key（或本机 Ollama，且模型支持 function calling）
 
 ### 安装 / 运行
 
@@ -67,11 +69,13 @@ cp .env.example .env
 go run ./cmd/agent "现在几点？请用工具查"
 go run ./cmd/agent "帮我算 123 * 456"
 
-# 交互模式（多轮会话 + 异步任务）
+# 交互模式（多轮 + 知识库 + 异步任务）
+# 仓库根目录运行时，若未设 AGENT_DOCS_ROOT，会自动尝试 examples/kb
 go run ./cmd/agent
+# 试：年假有多少天？请先 search_docs 再回答
 # /task submit 帮我算 12*34
 # /task list
-# /task wait <id>
+# /memory
 
 # 异步任务（同进程 submit+wait；状态仅内存）
 go run ./cmd/agent task submit "帮我算 123 * 456"
@@ -80,6 +84,16 @@ go run ./cmd/agent task submit "帮我算 123 * 456"
 go build -o bin/agent ./cmd/agent
 ./bin/agent "2 的 10 次方用计算器算"
 ```
+
+### 知识库 Demo
+
+```bash
+# 可选显式指定（默认同目录下 examples/kb 存在即启用）
+export AGENT_DOCS_ROOT=examples/kb
+go run ./cmd/agent "入职满一年年假几天？请查知识库"
+```
+
+语料与安全说明见 [examples/kb/README.md](examples/kb/README.md)。
 
 ### 使用 Ollama
 
@@ -106,6 +120,9 @@ go run ./cmd/agent "帮我算 12 * 34"
 | `AGENT_MEMORY_PATH` | `.agent_memory.json` | 档案 JSON 路径；空字符串关闭落盘 |
 | `AGENT_KEEP_RECENT_FULL_TURNS` | `1` | 保留完整 tool 轨迹的最近轮数；`-1` 关闭折叠 |
 | `AGENT_DISABLE_LLM_SUMMARY` | `false` | `true` 时 trim 摘要不做 LLM 压缩 |
+| `AGENT_DOCS_ROOT` | 自动 `examples/kb`（若存在） | 本地知识库根目录；无效则禁用 KB 工具 |
+| `AGENT_TASK_WORKERS` | `2` | 异步任务 worker 数 |
+| `AGENT_TASK_QUEUE` | `64` | 异步任务队列容量 |
 
 ## 作为库使用
 
@@ -125,10 +142,11 @@ import (
 
 func main() {
 	mem := agent.NewMemory()
+	// 第二个参数为知识库根目录；"" 表示不挂载 list/read/search_docs
 	a := &agent.Agent{
 		Provider: llm.NewOpenAI("", os.Getenv("OPENAI_API_KEY"), "gpt-4o-mini"),
 		Memory:   mem,
-		Tools:    tool.DefaultTools(mem),
+		Tools:    tool.DefaultTools(mem, "examples/kb"),
 		MaxTurns: 8,
 	}
 	out, err := a.Run(context.Background(), "现在几点？")
@@ -153,10 +171,12 @@ go build -o bin/agent ./cmd/agent
 
 1. `llm/types.go` — 消息与接口  
 2. `tool/tool.go` — 工具契约  
-3. `tool/builtin.go` — 工具示例  
+3. `tool/builtin.go` · `tool/docs.go` — 内置工具与知识库沙箱  
 4. **`agent/agent.go`** — **Loop（最重要）**  
-5. `llm/openai.go` — HTTP 适配  
-6. `cmd/agent/main.go` — CLI 组装  
+5. `agent/memory.go` — 结构化档案  
+6. `task/task.go` — 异步队列  
+7. `llm/openai.go` — HTTP 适配  
+8. `cmd/agent/main.go` — CLI 组装  
 
 详情见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与 [docs/LEARNING.md](docs/LEARNING.md)。
 
@@ -164,9 +184,9 @@ go build -o bin/agent ./cmd/agent
 
 | 做 | 不做（刻意） |
 |----|-------------|
-| 标准库、接口清晰 | 流式输出、向量库、MCP |
+| 标准库、接口清晰 | 流式输出、向量 RAG、MCP |
 | 可 mock 的 Provider | 多 Agent handoff |
-| MaxTurns 防死循环 | 权限沙箱 / 审批 UI |
-| 中文学习文档 | 企业级可观测全家桶 |
+| MaxTurns / 路径沙箱 / 结果截断 | 企业级权限审批 UI |
+| 中文学习文档 | 跨进程任务数据库 |
 
-先掌握 **loop + tools + messages**，再扩展其它能力。
+先掌握 **loop + tools + messages + 边界**，再扩展其它能力。

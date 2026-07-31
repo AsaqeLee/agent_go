@@ -10,7 +10,6 @@ import (
 	"github.com/asaqelee/agent_go/agent"
 	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/task"
-	"github.com/asaqelee/agent_go/tool"
 )
 
 // runTaskCLI handles one-shot process commands:
@@ -105,16 +104,9 @@ func newTaskManager(parent context.Context) (*task.Manager, func()) {
 				m = m2
 			}
 		}
-		a := &agent.Agent{
-			Provider:            provider,
-			Memory:              m,
-			Tools:               tool.DefaultTools(m),
-			MaxTurns:            envInt("AGENT_MAX_TURNS", 8),
-			MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
-			KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
-			DisableLLMSummary:   envBool("AGENT_DISABLE_LLM_SUMMARY", false),
-			Verbose:             envBool("AGENT_VERBOSE", false),
-		}
+		docs := resolveDocsRoot()
+		a := newSyncAgent(provider, m, docs)
+		a.Verbose = envBool("AGENT_VERBOSE", false)
 		return a.Run(ctx, goal)
 	}
 

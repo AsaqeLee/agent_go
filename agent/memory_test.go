@@ -72,7 +72,7 @@ func TestUpsertProfileInjectedBeforeChat(t *testing.T) {
 	a := &Agent{
 		Provider: p,
 		Memory:   mem,
-		Tools:    tool.DefaultTools(mem),
+		Tools:    tool.DefaultTools(mem, ""),
 		MaxTurns: 3,
 	}
 	if _, err := a.Run(context.Background(), "hi"); err != nil {

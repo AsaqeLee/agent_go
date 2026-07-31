@@ -28,7 +28,7 @@ func TestCalculator(t *testing.T) {
 }
 
 func TestRegistryUnknownTool(t *testing.T) {
-	r := NewRegistry(DefaultTools(nil))
+	r := NewRegistry(DefaultTools(nil, ""))
 	out := r.Execute(context.Background(), "nope", `{}`)
 	if out == "" || len(out) < 5 || out[:5] != "error" {
 		t.Fatalf("expected error string, got %q", out)
@@ -44,7 +44,7 @@ func TestEchoNoteEmpty(t *testing.T) {
 
 func TestDefaultToolsNames(t *testing.T) {
 	names := map[string]bool{}
-	for _, tl := range DefaultTools(nil) {
+	for _, tl := range DefaultTools(nil, "") {
 		if names[tl.Name()] {
 			t.Fatalf("duplicate tool name %q", tl.Name())
 		}

@@ -10,14 +10,16 @@ Agent:            user → LLM ⇄ tools → … → text
                          agent loop
 ```
 
-This repository implements the second shape with three packages:
+This repository implements the second shape with these packages:
 
 | Package | Role |
 |---------|------|
 | `llm` | Model types + OpenAI-compatible HTTP provider |
-| `tool` | Tool interface, registry, built-in demos |
-| `agent` | The loop that schedules LLM + tools |
-| `cmd/agent` | Thin CLI wiring |
+| `tool` | Tool interface, registry, built-ins, **sandboxed knowledge-base tools** |
+| `agent` | The loop that schedules LLM + tools; session trim/fold/summary; structured Memory |
+| `task` | In-process async job queue + workers |
+| `cmd/agent` | Thin CLI wiring (`AGENT_DOCS_ROOT`, `/task`, `/memory`) |
+| `examples/kb` | Sample policy/FAQ corpus for the vertical demo |
 
 ## Loop (pseudocode)
 
@@ -55,13 +57,25 @@ Tool results are capped **before** they enter `messages` / session history so on
 | **Tool ctx** | `Tool.Run(ctx, args)` — cancellation propagates from Agent.Run. |
 | `Stats()` / `/history` / `/memory` | Session size + profile field dump |
 | **Async tasks** | Package `task`: in-process queue + workers (`queued→running→succeeded\|failed\|cancelled`). Each job runs a **fresh** Agent. State is **process-local** (not a DB). |
+| **Local knowledge base** | `list_docs` / `search_docs` / `read_doc` rooted at `AGENT_DOCS_ROOT` (or auto `examples/kb`). Paths are sandboxed (no `..` / absolute escape). Read and search are capped. **Not** vector RAG—tool-mediated file access for a vertical demo. |
 
 CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
 
 ```text
 go run ./cmd/agent task submit "goal"     # submit + wait in one process
-go run ./cmd/agent                        # /task submit|list|status|wait|cancel
+go run ./cmd/agent                        # /task … ; KB demo if examples/kb present
+export AGENT_DOCS_ROOT=examples/kb        # optional explicit root
 ```
+
+### Knowledge-base tools (`tool/docs.go`)
+
+| Tool | Behavior |
+|------|----------|
+| `list_docs` | List text files under the root (optional relative subdir) |
+| `search_docs` | Case-insensitive substring walk; hit/file caps |
+| `read_doc` | Read one relative path; max bytes; UTF-8 only |
+
+`tool.DefaultTools(store, docsRoot)` appends these only when `docsRoot` is non-empty and resolves to an existing directory.
 
 ## Message roles
 
@@ -76,13 +90,15 @@ go run ./cmd/agent                        # /task submit|list|status|wait|cancel
 
 1. [`llm/types.go`](../llm/types.go) — messages, tools schema, `Provider`
 2. [`tool/tool.go`](../tool/tool.go) — `Tool` contract + registry
-3. [`tool/builtin.go`](../tool/builtin.go) — concrete tools
+3. [`tool/builtin.go`](../tool/builtin.go) · [`tool/docs.go`](../tool/docs.go) — concrete + KB tools
 4. **[`agent/agent.go`](../agent/agent.go)** — the loop (most important)
-5. [`llm/openai.go`](../llm/openai.go) — HTTP to `/v1/chat/completions`
-6. [`cmd/agent/main.go`](../cmd/agent/main.go) — CLI assembly
+5. [`agent/memory.go`](../agent/memory.go) — structured profile
+6. [`llm/openai.go`](../llm/openai.go) — HTTP to `/v1/chat/completions`
 7. [`task/task.go`](../task/task.go) — minimal async manager
+8. [`cmd/agent/main.go`](../cmd/agent/main.go) — CLI assembly
 
 ## Intentionally out of scope
 
-Streaming, durable task DB across processes, RAG, multi-agent handoffs, MCP, sandboxes, and permission UIs.
-Master the loop first; those are plugins on top.
+Streaming, durable task DB across processes, **vector** RAG, multi-agent handoffs, MCP, and permission UIs.
+Path sandboxing for the local docs root **is** in scope (minimal, intentional).
+Master the loop first; those other items are plugins on top.
