@@ -2,7 +2,10 @@
 // The agent depends only on these types and does not care which vendor implements them.
 package llm
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 // Role is a chat message role (OpenAI Chat Completions style).
 type Role string
@@ -58,9 +61,45 @@ type Request struct {
 	Tools    []ToolDef
 }
 
+// Usage is token accounting from one Chat call (OpenAI-compatible usage object).
+// Zero values mean the backend omitted usage.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	// Calls is how many Chat requests this Usage aggregates (1 for a single response).
+	Calls int
+}
+
+// Add returns the component-wise sum of two Usage values.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		PromptTokens:     u.PromptTokens + other.PromptTokens,
+		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
+		TotalTokens:      u.TotalTokens + other.TotalTokens,
+		Calls:            u.Calls + other.Calls,
+	}
+}
+
+// Format is a one-line summary for CLI / logs.
+func (u Usage) Format() string {
+	if u.Calls <= 0 && u.TotalTokens == 0 && u.PromptTokens == 0 && u.CompletionTokens == 0 {
+		return "calls=0 prompt=0 completion=0 total=0"
+	}
+	calls := u.Calls
+	if calls <= 0 {
+		calls = 1
+	}
+	return "calls=" + strconv.Itoa(calls) +
+		" prompt=" + strconv.Itoa(u.PromptTokens) +
+		" completion=" + strconv.Itoa(u.CompletionTokens) +
+		" total=" + strconv.Itoa(u.TotalTokens)
+}
+
 // Response is one completion result.
 type Response struct {
 	Message Message
+	Usage   Usage
 }
 
 // Provider is the model backend: given history (+ tools), return the next assistant message.

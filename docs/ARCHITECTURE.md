@@ -55,8 +55,10 @@ Tool results are capped **before** they enter `messages` / session history so on
 | **Trajectory fold** | Keep only N newest user-turns with full tool chains (`KeepRecentFullTurns`, default 1); older turns collapse to `user` + final `assistant`. |
 | **LLM summary (optional)** | After trim, extractive draft may be compressed via a tool-less LLM call when draft is large; failure falls back to extractive. |
 | **Tool ctx** | `Tool.Run(ctx, args)` — cancellation propagates from Agent.Run. |
-| `Stats()` / `/history` / `/memory` | Session size + profile field dump |
-| **Async tasks** | Package `task`: in-process queue + workers (`queued→running→succeeded\|failed\|cancelled`). Each job runs a **fresh** Agent. State is **process-local** (not a DB). |
+| `Stats()` / `/history` / `/memory` / `/usage` | Session size + profile dump + token usage |
+| **Async tasks** | Package `task`: in-process queue + workers (`queued→running→succeeded\|failed\|cancelled`). Each job runs a **fresh** Agent. State is **process-local** (not a DB). A full queue **rejects** `Submit` immediately (`task: queue full`) instead of blocking. |
+| **Token usage** | Provider parses optional `usage` from `/chat/completions`. Agent records last-run and session totals (committed only on successful `Run`; `Reset` clears them). CLI: `/usage`. |
+| **Transient retries** | `llm.OpenAI` retries 429 / 5xx / transport errors (default 2 extra attempts). 4xx other than 429 is not retried. |
 | **Local knowledge base** | `list_docs` / `search_docs` / `read_doc` rooted at `AGENT_DOCS_ROOT` (or auto `examples/kb`). Paths are sandboxed (no `..` / absolute escape). Read and search are capped. **Not** vector RAG—tool-mediated file access for a vertical demo. |
 
 CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).

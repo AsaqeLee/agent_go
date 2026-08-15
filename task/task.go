@@ -137,6 +137,9 @@ func (m *Manager) Submit(goal string) (Task, error) {
 		return m.mustGet(id), fmt.Errorf("task: manager stopped")
 	case m.queue <- id:
 		return m.mustGet(id), nil
+	default:
+		m.setTerminal(id, StatusFailed, "", "queue full")
+		return m.mustGet(id), fmt.Errorf("task: queue full")
 	}
 }
 

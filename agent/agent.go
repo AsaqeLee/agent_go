@@ -56,6 +56,11 @@ type Agent struct {
 	// history is short-term memory across Run calls (system + user/assistant/tool turns).
 	// Only updated when a Run finishes successfully.
 	history []llm.Message
+
+	// lastUsage is token accounting for the most recent successful Run (all Chat calls in that loop).
+	lastUsage llm.Usage
+	// sessionUsage accumulates successful Runs until Reset / ResetAll.
+	sessionUsage llm.Usage
 }
 
 // Run executes the agent loop for one user input and returns the final text answer.
@@ -85,6 +90,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 	registry := tool.NewRegistry(a.Tools)
 	toolDefs := tool.Defs(a.Tools)
+	var runUsage llm.Usage
 
 	for turn := 1; turn <= maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
@@ -105,11 +111,17 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 		assistant := resp.Message
 		messages = append(messages, assistant)
+		runUsage = runUsage.Add(normalizeUsage(resp.Usage))
 
 		// Case A: no tools → done; commit history, then optional fold + session trim.
 		if len(assistant.ToolCalls) == 0 {
 			a.commitHistory(ctx, messages)
+			a.lastUsage = runUsage
+			a.sessionUsage = a.sessionUsage.Add(runUsage)
 			a.log("final: %s", assistant.Content)
+			if runUsage.TotalTokens > 0 || runUsage.Calls > 0 {
+				a.log("usage: last %s | session %s", runUsage.Format(), a.sessionUsage.Format())
+			}
 			return strings.TrimSpace(assistant.Content), nil
 		}
 
@@ -168,6 +180,28 @@ func stripProfileMessages(msgs []llm.Message) []llm.Message {
 // Reset clears conversation history (not structured Memory). Next Run reseeds system prompt.
 func (a *Agent) Reset() {
 	a.history = nil
+	a.lastUsage = llm.Usage{}
+	a.sessionUsage = llm.Usage{}
+}
+
+// LastUsage returns token accounting for the most recent successful Run.
+func (a *Agent) LastUsage() llm.Usage {
+	return a.lastUsage
+}
+
+// SessionUsage returns token accounting accumulated since the last Reset.
+func (a *Agent) SessionUsage() llm.Usage {
+	return a.sessionUsage
+}
+
+func normalizeUsage(u llm.Usage) llm.Usage {
+	if u.Calls <= 0 && (u.PromptTokens > 0 || u.CompletionTokens > 0 || u.TotalTokens > 0) {
+		u.Calls = 1
+	}
+	if u.TotalTokens == 0 && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
 }
 
 // ResetMemory clears structured profile fields only.

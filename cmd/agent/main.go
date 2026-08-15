@@ -81,7 +81,7 @@ func main() {
 	defer mgr.Stop()
 
 	fmt.Println("agent_go — chat + memory + knowledge base + async tasks")
-	fmt.Println("  chat: message | /new | /new all | /history [full] | /memory | /memory clear")
+	fmt.Println("  chat: message | /new | /new all | /history [full] | /usage | /memory | /memory clear")
 	fmt.Println("  task: /task submit|list|status|wait|cancel")
 	fmt.Printf("model=%s base=%s max_history=%d memory=%s docs=%s workers=%d\n",
 		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displayDocs(docsRoot), envInt("AGENT_TASK_WORKERS", 2))
@@ -116,6 +116,9 @@ func main() {
 			continue
 		case line == "/history" || line == "/history full":
 			printHistory(a, line == "/history full")
+			continue
+		case line == "/usage":
+			printUsage(a)
 			continue
 		case line == "/memory":
 			printMemory(a)
@@ -157,6 +160,7 @@ func buildProviderAndMemory() (*llm.OpenAI, *agent.Memory, string) {
 }
 
 func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string) *agent.Agent {
+	provider.MaxRetries = envInt("AGENT_LLM_MAX_RETRIES", llm.DefaultMaxRetries)
 	a := &agent.Agent{
 		Provider:            provider,
 		Memory:              mem,
@@ -303,6 +307,11 @@ func ask(ctx context.Context, a *agent.Agent, question string) error {
 	return nil
 }
 
+func printUsage(a *agent.Agent) {
+	fmt.Println("last    " + a.LastUsage().Format())
+	fmt.Println("session " + a.SessionUsage().Format())
+}
+
 func printMemory(a *agent.Agent) {
 	if a.Memory == nil || a.Memory.Empty() {
 		fmt.Println("(empty profile)")
@@ -328,6 +337,9 @@ func printHistory(a *agent.Agent, full bool) {
 	h := a.History()
 	st := a.Stats()
 	fmt.Println(st.FormatStats())
+	if u := a.SessionUsage(); u.Calls > 0 || u.TotalTokens > 0 {
+		fmt.Println("usage: " + u.Format())
+	}
 	if a.Memory != nil && !a.Memory.Empty() {
 		fmt.Println("profile: " + a.Memory.ShortStatus())
 	}

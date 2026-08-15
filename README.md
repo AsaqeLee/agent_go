@@ -26,7 +26,10 @@
 | **异步任务** | 进程内队列 + Worker；`task submit` / 交互 `/task …` |
 | **OpenAI 兼容** | 官方 API / Ollama / DeepSeek 等 `/v1/chat/completions` |
 | **零第三方依赖** | 仅 `net/http` + 标准库 |
-| **可测** | mock Provider 覆盖 loop / 工具链 / MaxTurns / 知识库沙箱 |
+| **可测** | mock Provider 覆盖 loop / 工具链 / MaxTurns / 知识库沙箱；httptest 覆盖 Provider |
+| **用量可观测** | 解析兼容端点的 `usage`；`LastUsage` / `SessionUsage`；CLI `/usage` |
+| **瞬时重试** | 429 / 5xx / 传输错误有界重试（默认 2 次，可关） |
+| **任务背压** | 队列满时 `Submit` 立即失败，不阻塞 |
 
 ## 仓库结构
 
@@ -76,6 +79,7 @@ go run ./cmd/agent
 # /task submit 帮我算 12*34
 # /task list
 # /memory
+# /usage
 
 # 异步任务（同进程 submit+wait；状态仅内存）
 go run ./cmd/agent task submit "帮我算 123 * 456"
@@ -122,7 +126,8 @@ go run ./cmd/agent "帮我算 12 * 34"
 | `AGENT_DISABLE_LLM_SUMMARY` | `false` | `true` 时 trim 摘要不做 LLM 压缩 |
 | `AGENT_DOCS_ROOT` | 自动 `examples/kb`（若存在） | 本地知识库根目录；无效则禁用 KB 工具 |
 | `AGENT_TASK_WORKERS` | `2` | 异步任务 worker 数 |
-| `AGENT_TASK_QUEUE` | `64` | 异步任务队列容量 |
+| `AGENT_TASK_QUEUE` | `64` | 异步任务队列容量；满则 `Submit` 立刻失败 |
+| `AGENT_LLM_MAX_RETRIES` | `2` | Chat 瞬时失败额外重试次数；`-1` 关闭 |
 
 ## 作为库使用
 
