@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
@@ -28,7 +29,12 @@ const (
 // Memory is a structured, bounded profile that survives history trim.
 // It is NOT a chat transcript: only a few fields, injected into the system prompt.
 // Optional Path enables JSON persistence across process restarts.
+//
+// mu serializes field writes so same-turn parallel tool_calls (profile_update /
+// memory_set / echo_note) cannot race on slices or the on-disk JSON file.
 type Memory struct {
+	mu sync.Mutex
+
 	Name  string   `json:"name,omitempty"`
 	Likes []string `json:"likes,omitempty"`
 	Notes []string `json:"notes,omitempty"`
@@ -65,7 +71,20 @@ func LoadMemory(path string) (*Memory, error) {
 
 // Save writes profile fields to Path. No-op if Path is empty or m is nil.
 func (m *Memory) Save() error {
-	if m == nil || m.Path == "" {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.saveLocked()
+}
+
+func (m *Memory) persistLocked() {
+	_ = m.saveLocked() // best-effort; tools still succeed if disk fails
+}
+
+func (m *Memory) saveLocked() error {
+	if m.Path == "" {
 		return nil
 	}
 	if dir := filepath.Dir(m.Path); dir != "" && dir != "." {
@@ -85,18 +104,17 @@ func (m *Memory) Save() error {
 	return os.WriteFile(m.Path, data, 0o600)
 }
 
-func (m *Memory) persist() {
-	if m == nil || m.Path == "" {
-		return
-	}
-	_ = m.Save() // best-effort; tools still succeed if disk fails
-}
-
 // Empty reports whether any field is set.
 func (m *Memory) Empty() bool {
 	if m == nil {
 		return true
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.emptyLocked()
+}
+
+func (m *Memory) emptyLocked() bool {
 	return m.Name == "" && len(m.Likes) == 0 && len(m.Notes) == 0
 }
 
@@ -105,18 +123,29 @@ func (m *Memory) Clear() {
 	if m == nil {
 		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.Name = ""
 	m.Likes = nil
 	m.Notes = nil
-	m.persist()
+	m.persistLocked()
+}
+
+// MemoryView is a mutex-free copy of profile fields for CLI / tests.
+type MemoryView struct {
+	Name  string
+	Likes []string
+	Notes []string
 }
 
 // Snapshot returns a copy for CLI display.
-func (m *Memory) Snapshot() Memory {
+func (m *Memory) Snapshot() MemoryView {
 	if m == nil {
-		return Memory{}
+		return MemoryView{}
 	}
-	out := Memory{Name: m.Name}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := MemoryView{Name: m.Name}
 	if len(m.Likes) > 0 {
 		out.Likes = append([]string(nil), m.Likes...)
 	}
@@ -128,7 +157,12 @@ func (m *Memory) Snapshot() Memory {
 
 // RenderSystemBlock formats fields for model context. Empty memory → "".
 func (m *Memory) RenderSystemBlock() string {
-	if m.Empty() {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.emptyLocked() {
 		return ""
 	}
 	var b strings.Builder
@@ -159,18 +193,20 @@ func (m *Memory) SetField(field, value string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("value is empty")
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	switch field {
 	case "name":
 		m.setName(value)
-		m.persist()
+		m.persistLocked()
 		return fmt.Sprintf("profile updated: name=%s", m.Name), nil
 	case "like", "likes":
 		m.addLike(value)
-		m.persist()
+		m.persistLocked()
 		return fmt.Sprintf("profile updated: likes=%s", strings.Join(m.Likes, "; ")), nil
 	case "note", "notes":
 		m.addNote(value)
-		m.persist()
+		m.persistLocked()
 		return fmt.Sprintf("profile updated: note recorded (%d notes)", len(m.Notes)), nil
 	default:
 		return "", fmt.Errorf("unknown field %q (want name|like|note)", field)
@@ -187,9 +223,11 @@ func (m *Memory) Remember(text string) string {
 	if text == "" {
 		return "error: text is empty"
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.addNote(text)
-	m.persist()
-	return fmt.Sprintf("noted into profile notes: %s | %s", clipRunes(text, 80), m.ShortStatus())
+	m.persistLocked()
+	return fmt.Sprintf("noted into profile notes: %s | %s", clipRunes(text, 80), m.shortStatus())
 }
 
 // ApplyPatch applies a structured multi-field update from the LLM (tool JSON args).
@@ -198,6 +236,8 @@ func (m *Memory) ApplyPatch(name string, likes []string, notes []string) (string
 	if m == nil {
 		return "", fmt.Errorf("memory is nil")
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	changed := false
 	if n := strings.TrimSpace(name); n != "" {
 		m.setName(n)
@@ -222,8 +262,8 @@ func (m *Memory) ApplyPatch(name string, likes []string, notes []string) (string
 	if !changed {
 		return "", fmt.Errorf("empty patch: set name and/or likes and/or notes")
 	}
-	m.persist()
-	return fmt.Sprintf("profile patch applied | %s", m.ShortStatus()), nil
+	m.persistLocked()
+	return fmt.Sprintf("profile patch applied | %s", m.shortStatus()), nil
 }
 
 // ShortStatus is a one-line profile summary for logs/CLI.
@@ -231,6 +271,8 @@ func (m *Memory) ShortStatus() string {
 	if m == nil {
 		return "empty"
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.shortStatus()
 }
 

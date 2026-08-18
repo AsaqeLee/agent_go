@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
@@ -125,18 +126,21 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			return strings.TrimSpace(assistant.Content), nil
 		}
 
-		// Case B: execute tools and feed results back.
+		// Case B: same-turn tool_calls fan out, then join. Results are
+		// appended in the model's call order (not completion order).
+		// Shared Memory is mutex-serialized inside the store.
 		a.log("tool_calls: %d", len(assistant.ToolCalls))
 		for _, tc := range assistant.ToolCalls {
 			a.log("  → %s(%s)", tc.Function.Name, tc.Function.Arguments)
-			raw := registry.Execute(ctx, tc.Function.Name, tc.Function.Arguments)
-			result, truncated := a.capToolResult(raw)
+		}
+		results := a.executeToolCalls(ctx, registry, assistant.ToolCalls)
+		for i, tc := range assistant.ToolCalls {
+			result, raw, truncated := results[i].content, results[i].raw, results[i].truncated
 			if truncated {
-				a.log("  ← (truncated %d→%d chars) %s", utf8.RuneCountInString(raw), utf8.RuneCountInString(result), preview(result, 200))
+				a.log("  ← %s (truncated %d→%d chars) %s", tc.Function.Name, utf8.RuneCountInString(raw), utf8.RuneCountInString(result), preview(result, 200))
 			} else {
-				a.log("  ← %s", preview(result, 200))
+				a.log("  ← %s %s", tc.Function.Name, preview(result, 200))
 			}
-
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
 				ToolCallID: tc.ID,
@@ -147,6 +151,40 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	return "", fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
+}
+
+type toolCallResult struct {
+	content   string
+	raw       string
+	truncated bool
+}
+
+// executeToolCalls runs one assistant tool_calls batch concurrently and
+// returns results aligned with the input slice (model call order).
+func (a *Agent) executeToolCalls(ctx context.Context, registry *tool.Registry, calls []llm.ToolCall) []toolCallResult {
+	out := make([]toolCallResult, len(calls))
+	if len(calls) == 0 {
+		return out
+	}
+	if len(calls) == 1 {
+		raw := registry.Execute(ctx, calls[0].Function.Name, calls[0].Function.Arguments)
+		content, truncated := a.capToolResult(raw)
+		out[0] = toolCallResult{content: content, raw: raw, truncated: truncated}
+		return out
+	}
+	var wg sync.WaitGroup
+	wg.Add(len(calls))
+	for i, tc := range calls {
+		i, tc := i, tc
+		go func() {
+			defer wg.Done()
+			raw := registry.Execute(ctx, tc.Function.Name, tc.Function.Arguments)
+			content, truncated := a.capToolResult(raw)
+			out[i] = toolCallResult{content: content, raw: raw, truncated: truncated}
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 // commitHistory stores a successful run, folds old tool trajectories, then trims by MaxHistoryMessages.

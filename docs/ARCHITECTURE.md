@@ -33,9 +33,10 @@ for turn in 1..MaxTurns:
     if reply has no tool_calls:
         history = messages   # commit only on success
         return reply.content
-    for each call in reply.tool_calls:
-        result = tools.Execute(call)
-        result = cap(result, MaxToolResultChars)  # default 4096 runes
+    # same-turn batch: fan-out, then join (stdlib goroutines + WaitGroup)
+    start all reply.tool_calls concurrently   # each result is capped (default 4096 runes)
+    wait for every call
+    for each call in original order:          # not completion order
         messages.append(tool message with call id)
 return error: max turns exceeded   # history unchanged
 ```
@@ -59,6 +60,7 @@ Tool results are capped **before** they enter `messages` / session history so on
 | **Async tasks** | Package `task`: in-process queue + workers (`queued→running→succeeded\|failed\|cancelled`). Each job runs a **fresh** Agent. State is **process-local** (not a DB). A full queue **rejects** `Submit` immediately (`task: queue full`) instead of blocking. |
 | **Token usage** | Provider parses optional `usage` from `/chat/completions`. Agent records last-run and session totals (committed only on successful `Run`; `Reset` clears them). CLI: `/usage`. |
 | **Transient retries** | `llm.OpenAI` retries 429 / 5xx / transport errors (default 2 extra attempts). 4xx other than 429 is not retried. |
+| **Same-turn parallel tools** | One assistant `tool_calls` batch fans out with goroutines and joins before the next Chat. Tool messages stay in **model call order**. Shared Memory writes are mutex-serialized (`profile_update` / `memory_set` / `echo_note`). A single call stays sequential (no extra goroutine). |
 | **Local knowledge base** | `list_docs` / `search_docs` / `read_doc` rooted at `AGENT_DOCS_ROOT` (or auto `examples/kb`). Paths are sandboxed (no `..` / absolute escape). Read and search are capped. **Not** vector RAG—tool-mediated file access for a vertical demo. |
 
 CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).

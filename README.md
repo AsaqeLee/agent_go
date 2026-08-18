@@ -30,6 +30,7 @@
 | **用量可观测** | 解析兼容端点的 `usage`；`LastUsage` / `SessionUsage`；CLI `/usage` |
 | **瞬时重试** | 429 / 5xx / 传输错误有界重试（默认 2 次，可关） |
 | **任务背压** | 队列满时 `Submit` 立即失败，不阻塞 |
+| **同轮并行工具** | 同一 `tool_calls` 批次 fan-out/join；结果按 call 顺序回写；Memory 互斥 |
 
 ## 仓库结构
 

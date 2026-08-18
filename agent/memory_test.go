@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/asaqelee/agent_go/llm"
@@ -137,5 +139,24 @@ func TestProfileUpdateToolRoundTrip(t *testing.T) {
 	}
 	if mem.Name != "小明" || len(mem.Likes) != 2 {
 		t.Fatalf("%+v", mem.Snapshot())
+	}
+}
+
+func TestMemoryConcurrentWritesKeepAllNotes(t *testing.T) {
+	mem := NewMemory()
+	const n = 12 // below maxNotes so the bound does not hide a race
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			mem.Remember(fmt.Sprintf("note-%02d", i))
+		}()
+	}
+	wg.Wait()
+	got := mem.Snapshot().Notes
+	if len(got) != n {
+		t.Fatalf("notes=%d want %d (%v)", len(got), n, got)
 	}
 }
