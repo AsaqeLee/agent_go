@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -63,7 +65,7 @@ func (g *Grep) Retrieve(ctx context.Context, q Query) ([]Chunk, error) {
 		k = limits.MaxHits
 	}
 
-	qLower := strings.ToLower(query)
+	needles := grepNeedles(query)
 	var (
 		out      []Chunk
 		fileScan int
@@ -81,7 +83,7 @@ func (g *Grep) Retrieve(ctx context.Context, q Query) ([]Chunk, error) {
 			}
 			return nil
 		}
-		if strings.HasPrefix(d.Name(), ".") || !isTextDoc(d.Name()) {
+		if strings.HasPrefix(d.Name(), ".") || !isTextDoc(d.Name()) || skipDocName(d.Name()) {
 			return nil
 		}
 		fileScan++
@@ -99,10 +101,8 @@ func (g *Grep) Retrieve(ctx context.Context, q Query) ([]Chunk, error) {
 		rel = filepath.ToSlash(rel)
 		lines := strings.Split(string(data), "\n")
 		for i, line := range lines {
-			if len(out) >= k {
-				return fs.SkipAll
-			}
-			if !strings.Contains(strings.ToLower(line), qLower) {
+			score, ok := lineScore(line, needles)
+			if !ok {
 				continue
 			}
 			snippet := strings.TrimSpace(line)
@@ -113,7 +113,7 @@ func (g *Grep) Retrieve(ctx context.Context, q Query) ([]Chunk, error) {
 				ID:    fmt.Sprintf("%s:%d", rel, i+1),
 				Path:  rel,
 				Text:  snippet,
-				Score: 1,
+				Score: score,
 				Meta:  map[string]string{"line": fmt.Sprintf("%d", i+1)},
 			})
 		}
@@ -122,7 +122,75 @@ func (g *Grep) Retrieve(ctx context.Context, q Query) ([]Chunk, error) {
 	if err != nil && err != fs.SkipAll {
 		return nil, err
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if len(out) > k {
+		out = out[:k]
+	}
 	return out, nil
+}
+
+type needle struct {
+	text  string
+	score float64
+}
+
+func grepNeedles(q string) []needle {
+	q = strings.TrimSpace(q)
+	out := []needle{{text: strings.ToLower(q), score: 1}}
+	seen := map[string]bool{strings.ToLower(q): true}
+	add := func(s string, score float64) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if utf8.RuneCountInString(s) < 2 || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, needle{text: s, score: score})
+	}
+	fields := strings.FieldsFunc(q, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
+	for _, f := range fields {
+		add(f, 0.7)
+	}
+	rs := []rune(q)
+	for i := 0; i+1 < len(rs); i++ {
+		if unicode.Is(unicode.Han, rs[i]) && unicode.Is(unicode.Han, rs[i+1]) {
+			add(string(rs[i:i+2]), 0.55)
+		}
+	}
+	return out
+}
+
+func lineScore(line string, needles []needle) (float64, bool) {
+	lower := strings.ToLower(line)
+	best := 0.0
+	ok := false
+	for _, n := range needles {
+		if strings.Contains(lower, n.text) && n.score > best {
+			best = n.score
+			ok = true
+		}
+	}
+	return best, ok
+}
+
+// IsTextDoc reports whether name looks like a searchable text file.
+func IsTextDoc(name string) bool {
+	return isTextDoc(name)
+}
+
+// SkipDocName reports eval/index sidecars that must not be retrieved as corpus.
+func SkipDocName(name string) bool {
+	return skipDocName(name)
+}
+
+func skipDocName(name string) bool {
+	switch strings.ToLower(name) {
+	case "eval.json", "eval.yaml", "eval.yml", "readme.md", "readme":
+		return true
+	default:
+		return false
+	}
 }
 
 func isTextDoc(name string) bool {

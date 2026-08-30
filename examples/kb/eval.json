@@ -1,0 +1,22 @@
+[
+  {"id": "leave-1y", "question": "入职满一年年假有多少天？", "expect_path": "leave-policy.md", "expect_substr": ["10"]},
+  {"id": "leave-5y", "question": "入职满五年年假几天", "expect_path": "leave-policy.md", "expect_substr": ["15"]},
+  {"id": "leave-advance", "question": "年假需要提前几天申请", "expect_path": "leave-policy.md", "expect_substr": ["3"]},
+  {"id": "sick-note", "question": "病假需要什么证明", "expect_path": "leave-policy.md", "expect_substr": ["医院"]},
+  {"id": "comp-time", "question": "加班调休必须在多少天内用完", "expect_path": "leave-policy.md", "expect_substr": ["30"]},
+  {"id": "unpaid-leave", "question": "事假有工资吗", "expect_path": "leave-policy.md", "expect_substr": ["无薪"]},
+  {"id": "wifi-name", "question": "办公 Wi-Fi 叫什么", "expect_path": "faq.md", "expect_substr": ["DemoCorp-Office"]},
+  {"id": "guest-wifi", "question": "访客无线网密码在哪拿", "expect_path": "faq.md", "expect_substr": ["前台"]},
+  {"id": "vpn", "question": "VPN 怎么登录", "expect_path": "faq.md", "expect_substr": ["工号"]},
+  {"id": "email-format", "question": "公司邮箱格式是什么", "expect_path": "faq.md", "expect_substr": ["拼音"]},
+  {"id": "password-reset", "question": "忘记密码怎么办", "expect_path": "faq.md", "expect_substr": ["解锁"]},
+  {"id": "expense-days", "question": "差旅报销要在几天内提交", "expect_path": "faq.md", "expect_substr": ["15"]},
+  {"id": "meal-receipt", "question": "餐饮发票超过多少需要业务说明", "expect_path": "faq.md", "expect_substr": ["200"]},
+  {"id": "day1-badge", "question": "入职第一天到前台领什么", "expect_path": "onboarding.md", "expect_substr": ["工牌"]},
+  {"id": "prod-acl", "question": "新人默认有没有生产环境权限", "expect_path": "onboarding.md", "expect_substr": ["无权限"]},
+  {"id": "hrbp", "question": "HR BP 邮箱是什么", "expect_path": "onboarding.md", "expect_substr": ["hrbp@"]},
+  {"id": "it-help", "question": "IT Helpdesk 怎么联系", "expect_path": "onboarding.md", "expect_substr": ["it@"]},
+  {"id": "security-ack", "question": "入职第一天要签什么安全文件", "expect_path": "onboarding.md", "expect_substr": ["信息安全"]},
+  {"id": "mentor", "question": "第一天要和谁对齐本周目标", "expect_path": "onboarding.md", "expect_substr": ["mentor"]},
+  {"id": "week1-repo", "question": "第一周代码仓库权限是什么级别", "expect_path": "onboarding.md", "expect_substr": ["只读"]}
+]

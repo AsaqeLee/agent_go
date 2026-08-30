@@ -17,3 +17,11 @@ go run ./cmd/agent
 - VPN 怎么连？
 
 安全说明：工具只能访问 `AGENT_DOCS_ROOT` 沙箱内相对路径，禁止 `..` 逃逸。
+
+检索评测（`eval.json`，grep 为基线）：
+
+```bash
+go run ./cmd/agent eval --retriever grep --root examples/kb
+go run ./cmd/agent index --root examples/kb --hash --out .agent_index.json
+go run ./cmd/agent eval --retriever vector --hash --index .agent_index.json --cases examples/kb/eval.json
+```

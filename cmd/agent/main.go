@@ -28,6 +28,8 @@ import (
 
 	"github.com/asaqelee/agent_go/agent"
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/rag"
+	"github.com/asaqelee/agent_go/retrieve"
 	"github.com/asaqelee/agent_go/session"
 	"github.com/asaqelee/agent_go/task"
 	"github.com/asaqelee/agent_go/tool"
@@ -44,9 +46,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Subcommand: task …
-	if len(os.Args) > 1 && os.Args[1] == "task" {
-		os.Exit(runTaskCLI(ctx, os.Args[2:]))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "task":
+			os.Exit(runTaskCLI(ctx, os.Args[2:]))
+		case "index":
+			os.Exit(runIndexCLI(ctx, os.Args[2:]))
+		case "eval":
+			os.Exit(runEvalCLI(ctx, os.Args[2:]))
+		}
 	}
 
 	provider, mem, memPath := buildProviderAndMemory()
@@ -85,8 +93,8 @@ func main() {
 	fmt.Println("agent_go — chat + memory + knowledge base + async tasks")
 	fmt.Println("  chat: message | /new | /new all | /history [full] | /usage | /memory | /memory clear")
 	fmt.Println("  task: /task submit|list|status|wait|cancel")
-	fmt.Printf("model=%s base=%s max_history=%d memory=%s session=%s docs=%s workers=%d\n",
-		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displaySession(a), displayDocs(docsRoot), envInt("AGENT_TASK_WORKERS", 2))
+	fmt.Printf("model=%s base=%s max_history=%d memory=%s session=%s docs=%s retriever=%s workers=%d\n",
+		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displaySession(a), displayDocs(docsRoot), env("AGENT_RETRIEVER", "grep"), envInt("AGENT_TASK_WORKERS", 2))
 	if docsRoot != "" {
 		fmt.Println("  kb demo: try「年假有多少天？请先 search_docs 再回答」")
 	}
@@ -163,10 +171,11 @@ func buildProviderAndMemory() (*llm.OpenAI, *agent.Memory, string) {
 
 func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string) *agent.Agent {
 	provider.MaxRetries = envInt("AGENT_LLM_MAX_RETRIES", llm.DefaultMaxRetries)
+	provider.EmbedModel = env("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 	a := &agent.Agent{
 		Provider:            provider,
 		Memory:              mem,
-		Tools:               tool.DefaultTools(mem, docsRoot),
+		Tools:               tool.DefaultToolsWith(mem, docsRoot, resolveRetriever(docsRoot, provider)),
 		MaxTurns:            envInt("AGENT_MAX_TURNS", 8),
 		MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
 		KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
@@ -212,6 +221,24 @@ func resolveDocsRoot() string {
 		return "examples/kb"
 	}
 	return ""
+}
+
+func resolveRetriever(docsRoot string, provider *llm.OpenAI) retrieve.Retriever {
+	if env("AGENT_RETRIEVER", "grep") != "vector" {
+		return nil
+	}
+	path := env("AGENT_INDEX_PATH", ".agent_index.json")
+	idx, err := rag.Load(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: vector index %s: %v (falling back to grep)\n", path, err)
+		return nil
+	}
+	var embed llm.Embedder = provider
+	if idx.Model == "hash" || envBool("AGENT_EMBED_HASH", false) {
+		embed = rag.HashEmbedder{}
+	}
+	fmt.Fprintf(os.Stderr, "retriever=vector index=%s model=%s chunks=%d\n", path, idx.Model, len(idx.Items))
+	return &rag.Vector{Index: idx, Embed: embed}
 }
 
 func displayDocs(root string) string {

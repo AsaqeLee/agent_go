@@ -22,6 +22,8 @@ type OpenAI struct {
 	BaseURL    string // e.g. https://api.openai.com/v1 or http://localhost:11434/v1
 	APIKey     string
 	Model      string
+	// EmbedModel is used by Embed(). Empty → text-embedding-3-small.
+	EmbedModel string
 	HTTPClient *http.Client
 	// MaxRetries is extra attempts after the first try for 429 / 5xx / transport errors.
 	// 0 → DefaultMaxRetries; negative → no retries.
