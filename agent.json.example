@@ -1,0 +1,23 @@
+{
+  "retriever": "grep",
+  "index_path": ".agent_index.json",
+  "mcp": {
+    "servers": [
+      {
+        "name": "echo",
+        "command": "go",
+        "args": ["run", "./examples/mcp-echo"],
+        "allow": ["*"]
+      }
+    ]
+  },
+  "specialists": [
+    {
+      "name": "docs",
+      "description": "Answer only from the local knowledge base and cite file paths.",
+      "prompt": "You are a docs specialist. Use list_docs, search_docs, and read_doc only. Cite relative paths. If the corpus lacks the answer, say so.",
+      "tools": ["list_docs", "search_docs", "read_doc"]
+    }
+  ],
+  "http": { "addr": ":8080" }
+}

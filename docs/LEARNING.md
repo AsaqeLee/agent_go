@@ -40,7 +40,14 @@
 8. ~~本地知识库沙箱~~（`list_docs` / `search_docs` / `read_doc` + `examples/kb`）  
 9. ~~用量统计 + 瞬时重试 + 任务队列背压~~  
 10. ~~同轮并行 tool_calls~~（fan-out/join；结果按 call 顺序回写；Memory 互斥）  
-11. 流式输出、向量 RAG、持久化任务库、MCP、多 Agent（进阶）  
+11. ~~Retriever seam + grep~~（`retrieve`；`search_docs` 不再自己 Walk）  
+12. ~~会话 Store / Streamer / ExecResult~~  
+13. ~~向量 RAG + `agent index` / `agent eval`~~（`examples/kb/eval.json`）  
+14. ~~MCP stdio + allowlist + 审批~~  
+15. ~~HTTP SSE + 任务落盘 + JSONL spans~~  
+16. ~~handoff specialist + `agent.json` 插件目录~~  
+
+进阶：换 Qdrant/OTLP 真 exporter、给 MCP 加 LSP 以外的传输，都只加 adapter。
 
 ## 读源码顺序
 

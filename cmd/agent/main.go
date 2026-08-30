@@ -30,6 +30,7 @@ import (
 	"github.com/asaqelee/agent_go/agent"
 	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/obs"
+	"github.com/asaqelee/agent_go/plugin"
 	"github.com/asaqelee/agent_go/rag"
 	"github.com/asaqelee/agent_go/retrieve"
 	"github.com/asaqelee/agent_go/session"
@@ -39,6 +40,8 @@ import (
 
 const listPreviewRunes = 120
 
+var catalog plugin.Config
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -47,6 +50,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "dotenv: %v\n", err)
 		os.Exit(1)
 	}
+	loadCatalog()
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -58,6 +62,8 @@ func main() {
 			os.Exit(runEvalCLI(ctx, os.Args[2:]))
 		case "serve":
 			os.Exit(runServeCLI(ctx, os.Args[2:]))
+		case "plugin":
+			os.Exit(runPluginCLI(ctx, os.Args[2:]))
 		}
 	}
 
@@ -67,6 +73,7 @@ func main() {
 	provider, mem, memPath := buildProviderAndMemory()
 	docsRoot := resolveDocsRoot()
 	a := newSyncAgent(provider, mem, docsRoot, mcpTools)
+	attachRoster(a, docsRoot)
 	attachSession(a)
 
 	// One-shot sync question
@@ -89,6 +96,7 @@ func main() {
 			}
 		}
 		ag := newSyncAgent(provider, mem2, docsRoot, mcpTools)
+		attachRoster(ag, docsRoot)
 		ag.Verbose = envBool("AGENT_VERBOSE", false)
 		return ag.Run(taskCtx, goal)
 	}, task.Options{
@@ -102,7 +110,7 @@ func main() {
 	fmt.Println("  chat: message | /new | /new all | /history [full] | /usage | /memory | /memory clear")
 	fmt.Println("  task: /task submit|list|status|wait|cancel")
 	fmt.Printf("model=%s base=%s max_history=%d memory=%s session=%s docs=%s retriever=%s workers=%d\n",
-		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displaySession(a), displayDocs(docsRoot), env("AGENT_RETRIEVER", "grep"), envInt("AGENT_TASK_WORKERS", 2))
+		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displaySession(a), displayDocs(docsRoot), retrieverKind(), envInt("AGENT_TASK_WORKERS", 2))
 	if docsRoot != "" {
 		fmt.Println("  kb demo: try「年假有多少天？请先 search_docs 再回答」")
 	}
@@ -260,11 +268,45 @@ func resolveTaskStore() task.Store {
 	return &task.FileStore{Path: path}
 }
 
+func loadCatalog() {
+	p := plugin.LookupDefault()
+	if p == "" {
+		return
+	}
+	cfg, err := plugin.Load(p)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "catalog %s: %v\n", p, err)
+		os.Exit(1)
+	}
+	catalog = cfg
+	fmt.Fprintf(os.Stderr, "loaded catalog %s\n", p)
+}
+
+func retrieverKind() string {
+	if v := os.Getenv("AGENT_RETRIEVER"); v != "" {
+		return v
+	}
+	if catalog.Retriever != "" {
+		return catalog.Retriever
+	}
+	return "grep"
+}
+
+func indexPath() string {
+	if v := os.Getenv("AGENT_INDEX_PATH"); v != "" {
+		return v
+	}
+	if catalog.IndexPath != "" {
+		return catalog.IndexPath
+	}
+	return ".agent_index.json"
+}
+
 func resolveRetriever(docsRoot string, provider *llm.OpenAI) retrieve.Retriever {
-	if env("AGENT_RETRIEVER", "grep") != "vector" {
+	if retrieverKind() != "vector" {
 		return nil
 	}
-	path := env("AGENT_INDEX_PATH", ".agent_index.json")
+	path := indexPath()
 	idx, err := rag.Load(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: vector index %s: %v (falling back to grep)\n", path, err)

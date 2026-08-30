@@ -30,7 +30,7 @@ func runIndexCLI(ctx context.Context, args []string) int {
 	}
 	path := *out
 	if path == "" {
-		path = env("AGENT_INDEX_PATH", ".agent_index.json")
+		path = indexPath()
 	}
 
 	var embed llm.Embedder

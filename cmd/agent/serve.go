@@ -14,7 +14,14 @@ import (
 func runServeCLI(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	addr := fs.String("addr", env("AGENT_HTTP_ADDR", ":8080"), "listen address")
+	defAddr := env("AGENT_HTTP_ADDR", "")
+	if defAddr == "" {
+		defAddr = catalog.HTTP.Addr
+	}
+	if defAddr == "" {
+		defAddr = ":8080"
+	}
+	addr := fs.String("addr", defAddr, "listen address")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -29,6 +36,7 @@ func runServeCLI(ctx context.Context, args []string) int {
 		Park: park,
 		NewAgent: func(sessionID string) *agent.Agent {
 			a := newSyncAgent(provider, mem, docsRoot, mcpTools)
+			attachRoster(a, docsRoot)
 			a.SessionID = sessionID
 			dir := env("AGENT_SESSION_DIR", ".agent_sessions")
 			if dir != "off" && dir != "-" {

@@ -35,9 +35,9 @@ func (denyAll) Approve(context.Context, Approval) (bool, error) { return false, 
 
 type needsOK struct{}
 
-func (needsOK) Name() string                   { return "needs_ok" }
-func (needsOK) Description() string            { return "x" }
-func (needsOK) Parameters() map[string]any     { return map[string]any{"type": "object"} }
+func (needsOK) Name() string               { return "needs_ok" }
+func (needsOK) Description() string        { return "x" }
+func (needsOK) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (needsOK) Run(context.Context, string) (string, error) {
 	return "ran", nil
 }

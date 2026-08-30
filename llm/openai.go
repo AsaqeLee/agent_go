@@ -19,9 +19,9 @@ const DefaultMaxRetries = 2
 // Works with OpenAI, Ollama, DeepSeek, vLLM, and any service that implements
 // POST /v1/chat/completions.
 type OpenAI struct {
-	BaseURL    string // e.g. https://api.openai.com/v1 or http://localhost:11434/v1
-	APIKey     string
-	Model      string
+	BaseURL string // e.g. https://api.openai.com/v1 or http://localhost:11434/v1
+	APIKey  string
+	Model   string
 	// EmbedModel is used by Embed(). Empty → text-embedding-3-small.
 	EmbedModel string
 	HTTPClient *http.Client

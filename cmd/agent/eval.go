@@ -18,7 +18,7 @@ func runEvalCLI(ctx context.Context, args []string) int {
 	kind := fs.String("retriever", "", "grep or vector (default AGENT_RETRIEVER or grep)")
 	casesPath := fs.String("cases", "", "eval JSON (default <docs>/eval.json)")
 	root := fs.String("root", "", "docs root for grep")
-	indexPath := fs.String("index", "", "vector index JSON")
+	indexFile := fs.String("index", "", "vector index JSON")
 	k := fs.Int("k", 8, "top-k")
 	useHash := fs.Bool("hash", false, "vector query embeddings via HashEmbedder")
 	if err := fs.Parse(args); err != nil {
@@ -45,7 +45,7 @@ func runEvalCLI(ctx context.Context, args []string) int {
 
 	rkind := *kind
 	if rkind == "" {
-		rkind = env("AGENT_RETRIEVER", "grep")
+		rkind = retrieverKind()
 	}
 
 	var retr retrieve.Retriever
@@ -62,9 +62,9 @@ func runEvalCLI(ctx context.Context, args []string) int {
 		}
 		retr = retrieve.NewGrep(abs, retrieve.GrepLimits{})
 	case "vector":
-		ip := *indexPath
+		ip := *indexFile
 		if ip == "" {
-			ip = env("AGENT_INDEX_PATH", ".agent_index.json")
+			ip = indexPath()
 		}
 		idx, err := rag.Load(ip)
 		if err != nil {

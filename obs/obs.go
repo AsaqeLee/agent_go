@@ -29,9 +29,9 @@ type Tracer interface {
 
 type nopSpan struct{}
 
-func (nopSpan) End()                 {}
-func (nopSpan) Set(string, any)      {}
-func (nopSpan) RecordError(error)    {}
+func (nopSpan) End()              {}
+func (nopSpan) Set(string, any)   {}
+func (nopSpan) RecordError(error) {}
 
 type nopTracer struct{}
 
@@ -61,16 +61,16 @@ func File(path string) (*JSONL, error) {
 }
 
 type span struct {
-	tracer    *JSONL
-	traceID   string
-	spanID    string
-	parentID  string
-	name      string
-	start     time.Time
-	attrs     map[string]any
-	err       string
-	ended     bool
-	mu        sync.Mutex
+	tracer   *JSONL
+	traceID  string
+	spanID   string
+	parentID string
+	name     string
+	start    time.Time
+	attrs    map[string]any
+	err      string
+	ended    bool
+	mu       sync.Mutex
 }
 
 func (t *JSONL) Start(ctx context.Context, name string) (context.Context, Span) {
@@ -123,14 +123,14 @@ func (s *span) End() {
 	}
 	s.ended = true
 	rec := map[string]any{
-		"trace_id":        s.traceID,
-		"span_id":         s.spanID,
-		"parent_span_id":  s.parentID,
-		"name":            s.name,
-		"start":           s.start.Format(time.RFC3339Nano),
-		"end":             time.Now().UTC().Format(time.RFC3339Nano),
-		"duration_ms":     time.Since(s.start).Milliseconds(),
-		"attrs":           s.attrs,
+		"trace_id":       s.traceID,
+		"span_id":        s.spanID,
+		"parent_span_id": s.parentID,
+		"name":           s.name,
+		"start":          s.start.Format(time.RFC3339Nano),
+		"end":            time.Now().UTC().Format(time.RFC3339Nano),
+		"duration_ms":    time.Since(s.start).Milliseconds(),
+		"attrs":          s.attrs,
 	}
 	if s.err != "" {
 		rec["error"] = s.err

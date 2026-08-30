@@ -14,12 +14,19 @@ This repository implements the second shape with these packages:
 
 | Package | Role |
 |---------|------|
-| `llm` | Model types + OpenAI-compatible HTTP provider |
-| `tool` | Tool interface, registry, built-ins, **sandboxed knowledge-base tools** |
-| `agent` | The loop that schedules LLM + tools; session trim/fold/summary; structured Memory |
-| `task` | In-process async job queue + workers |
-| `cmd/agent` | Thin CLI wiring (`AGENT_DOCS_ROOT`, `/task`, `/memory`) |
-| `examples/kb` | Sample policy/FAQ corpus for the vertical demo |
+| `llm` | Model types + OpenAI-compatible HTTP provider (`Provider`, optional `Streamer`, `Embedder`) |
+| `tool` | Tool interface, registry, built-ins, sandboxed KB tools, `ExecResult` / `Policy` |
+| `retrieve` | `Retriever` seam; grep is the zero-dep adapter |
+| `rag` | Chunking, vector index, eval gold runner |
+| `mcp` | MCP stdio JSON-RPC client → `[]tool.Tool` |
+| `session` | Durable chat history store |
+| `agent` | The loop; trim/fold/summary; Memory; handoff roster |
+| `task` | Async job queue + workers + optional file store |
+| `httpapi` | `POST /v1/runs` (JSON or SSE) and approvals |
+| `obs` | OTEL-shaped JSONL tracer |
+| `plugin` | `agent.json` catalog |
+| `cmd/agent` | CLI wiring |
+| `examples/kb` | Sample corpus + `eval.json` |
 
 ## Loop (pseudocode)
 
@@ -61,7 +68,11 @@ Tool results are capped **before** they enter `messages` / session history so on
 | **Token usage** | Provider parses optional `usage` from `/chat/completions`. Agent records last-run and session totals (committed only on successful `Run`; `Reset` clears them). CLI: `/usage`. |
 | **Transient retries** | `llm.OpenAI` retries 429 / 5xx / transport errors (default 2 extra attempts). 4xx other than 429 is not retried. |
 | **Same-turn parallel tools** | One assistant `tool_calls` batch fans out with goroutines and joins before the next Chat. Tool messages stay in **model call order**. Shared Memory writes are mutex-serialized (`profile_update` / `memory_set` / `echo_note`). A single call stays sequential (no extra goroutine). |
-| **Local knowledge base** | `list_docs` / `search_docs` / `read_doc` rooted at `AGENT_DOCS_ROOT` (or auto `examples/kb`). Paths are sandboxed (no `..` / absolute escape). Read and search are capped. **Not** vector RAG—tool-mediated file access for a vertical demo. |
+| **Local knowledge base** | `list_docs` / `search_docs` / `read_doc` rooted at `AGENT_DOCS_ROOT` (or auto `examples/kb`). Paths are sandboxed. `search_docs` calls `retrieve.Retriever` (grep by default; vector when `AGENT_RETRIEVER=vector` and an index exists). |
+| **Streaming** | If `Agent.Stream` and the provider implements `llm.Streamer`, tokens go to `OnEvent`. |
+| **Session store** | Optional `session.Store` saves history after a successful Run. |
+| **MCP** | Optional stdio servers; tools named `{server}__{tool}`; empty allowlist denies all. |
+| **Handoff** | `handoff` tool clones the parent Agent with a specialist prompt and tool allowlist. |
 
 CLI default: `AGENT_MAX_HISTORY_MESSAGES=40` (override via env / `.env`).
 
@@ -94,15 +105,14 @@ export AGENT_DOCS_ROOT=examples/kb        # optional explicit root
 
 1. [`llm/types.go`](../llm/types.go) — messages, tools schema, `Provider`
 2. [`tool/tool.go`](../tool/tool.go) — `Tool` contract + registry
-3. [`tool/builtin.go`](../tool/builtin.go) · [`tool/docs.go`](../tool/docs.go) — concrete + KB tools
+3. [`retrieve/retrieve.go`](../retrieve/retrieve.go) — retrieval seam
 4. **[`agent/agent.go`](../agent/agent.go)** — the loop (most important)
-5. [`agent/memory.go`](../agent/memory.go) — structured profile
-6. [`llm/openai.go`](../llm/openai.go) — HTTP to `/v1/chat/completions`
-7. [`task/task.go`](../task/task.go) — minimal async manager
-8. [`cmd/agent/main.go`](../cmd/agent/main.go) — CLI assembly
+5. [`mcp/bridge.go`](../mcp/bridge.go) · [`rag/vector.go`](../rag/vector.go) — adapters
+6. [`httpapi/server.go`](../httpapi/server.go) — HTTP/SSE
+7. [`cmd/agent/main.go`](../cmd/agent/main.go) — CLI assembly
 
-## Intentionally out of scope
+## Adapter seams (keep the loop small)
 
-Streaming, durable task DB across processes, **vector** RAG, multi-agent handoffs, MCP, and permission UIs.
-Path sandboxing for the local docs root **is** in scope (minimal, intentional).
-Master the loop first; those other items are plugins on top.
+RAG, MCP, HTTP, tracing, and handoff sit **behind** `Retriever` / `Tool` / `OnEvent` / `session.Store`. They must not grow `Agent.Run`.
+
+Still out of scope: embedding a third-party agent framework as the kernel, marketplace websites, multi-tenant IAM. Path sandboxing for the local docs root **is** in scope.

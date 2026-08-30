@@ -24,24 +24,27 @@ func lookupMCPConfig() string {
 
 func startMCP(ctx context.Context) ([]tool.Tool, func()) {
 	path := lookupMCPConfig()
-	if path == "" {
+	servers := catalog.MCP.Servers
+	src := "agent.json"
+	if path != "" {
+		cfg, err := mcp.LoadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcp config %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		servers = cfg.Servers
+		src = path
+	}
+	if len(servers) == 0 {
 		return nil, func() {}
 	}
-	cfg, err := mcp.LoadFile(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mcp config %s: %v\n", path, err)
-		os.Exit(1)
-	}
-	if len(cfg.Servers) == 0 {
-		return nil, func() {}
-	}
-	b, err := mcp.Connect(ctx, cfg.Servers)
+	b, err := mcp.Connect(ctx, servers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mcp: %v\n", err)
 		os.Exit(1)
 	}
 	tools := b.Tools()
-	fmt.Fprintf(os.Stderr, "mcp: %s servers=%d tools=%d (default-deny allowlist)\n", path, len(cfg.Servers), len(tools))
+	fmt.Fprintf(os.Stderr, "mcp: %s servers=%d tools=%d (default-deny allowlist)\n", src, len(servers), len(tools))
 	for _, t := range tools {
 		fmt.Fprintf(os.Stderr, "  mcp tool %s\n", t.Name())
 	}

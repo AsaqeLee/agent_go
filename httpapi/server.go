@@ -17,7 +17,7 @@ import (
 type Deps struct {
 	// NewAgent builds a fully configured agent for one session id.
 	NewAgent func(sessionID string) *agent.Agent
-	Park *Park
+	Park     *Park
 }
 
 // Handler serves /healthz, /v1/runs, /v1/approvals/{id}.
