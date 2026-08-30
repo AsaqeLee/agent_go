@@ -46,6 +46,7 @@ type Manager struct {
 	runner  Runner
 	workers int
 	queue   chan string
+	store   Store
 
 	mu      sync.Mutex
 	tasks   map[string]*taskRec
@@ -65,6 +66,7 @@ type taskRec struct {
 type Options struct {
 	Workers   int // default 1
 	QueueSize int // default 64
+	Store     Store
 }
 
 // NewManager starts workers immediately. Stop cancels root context and waits.
@@ -86,16 +88,56 @@ func NewManager(parent context.Context, runner Runner, opt Options) *Manager {
 		runner:     runner,
 		workers:    opt.Workers,
 		queue:      make(chan string, opt.QueueSize),
+		store:      opt.Store,
 		tasks:      make(map[string]*taskRec),
 		cancels:    make(map[string]context.CancelFunc),
 		rootCtx:    ctx,
 		rootCancel: cancel,
 	}
+	m.restoreLocked()
 	for i := 0; i < opt.Workers; i++ {
 		m.wg.Add(1)
 		go m.workerLoop()
 	}
 	return m
+}
+
+func (m *Manager) restoreLocked() {
+	if m.store == nil {
+		return
+	}
+	list, err := m.store.List()
+	if err != nil {
+		return
+	}
+	for _, t := range list {
+		rec := t
+		if rec.Status == StatusRunning {
+			rec.Status = StatusFailed
+			rec.Error = "interrupted by restart"
+			rec.Progress = "failed"
+		}
+		cp := rec
+		m.tasks[rec.ID] = &taskRec{Task: cp}
+		m.order = append(m.order, rec.ID)
+		if rec.Status == StatusQueued {
+			select {
+			case m.queue <- rec.ID:
+			default:
+				// queue full at restore: leave queued in map; Submit-style drop avoided
+			}
+		}
+		if rec.Status == StatusFailed && rec.Error == "interrupted by restart" {
+			_ = m.store.Put(rec)
+		}
+	}
+}
+
+func (m *Manager) persist(rec *taskRec) {
+	if m.store == nil || rec == nil {
+		return
+	}
+	_ = m.store.Put(rec.Task)
 }
 
 // Stop cancels workers and in-flight tasks, then waits for workers to exit.
@@ -129,6 +171,7 @@ func (m *Manager) Submit(goal string) (Task, error) {
 	m.mu.Lock()
 	m.tasks[id] = rec
 	m.order = append(m.order, id)
+	m.persist(rec)
 	m.mu.Unlock()
 
 	select {
@@ -185,6 +228,7 @@ func (m *Manager) Cancel(id string) (Task, error) {
 		rec.Status = StatusCancelled
 		rec.Progress = "cancelled before start"
 		rec.FinishedAt = time.Now().UTC()
+		m.persist(rec)
 		t := rec.Task
 		m.mu.Unlock()
 		return t, nil
@@ -255,6 +299,7 @@ func (m *Manager) runOne(id string) {
 	rec.Status = StatusRunning
 	rec.Progress = "running"
 	rec.StartedAt = time.Now().UTC()
+	m.persist(rec)
 	goal := rec.Goal
 	taskCtx, cancel := context.WithCancel(m.rootCtx)
 	m.cancels[id] = cancel
@@ -275,6 +320,7 @@ func (m *Manager) runOne(id string) {
 	if !ok {
 		return
 	}
+	defer m.persist(rec)
 	// If user cancelled while running, prefer cancelled.
 	if taskCtx.Err() != nil && rec.Status == StatusRunning {
 		if err != nil && taskCtx.Err() != nil {
@@ -320,6 +366,7 @@ func (m *Manager) setTerminal(id string, st Status, result, errMsg string) {
 	rec.Result = result
 	rec.Error = errMsg
 	rec.FinishedAt = time.Now().UTC()
+	m.persist(rec)
 }
 
 func (m *Manager) mustGet(id string) Task {

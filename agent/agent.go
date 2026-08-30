@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/obs"
 	"github.com/asaqelee/agent_go/session"
 	"github.com/asaqelee/agent_go/tool"
 )
@@ -72,6 +73,8 @@ type Agent struct {
 	Approver tool.Approver
 	// Redact mutates tool Content before it enters history / the model. Nil is identity.
 	Redact func(name, content string) string
+	// Tracer records run / chat / tool spans. Nil is a no-op.
+	Tracer obs.Tracer
 
 	// history is short-term memory across Run calls (system + user/assistant/tool turns).
 	// Only updated when a Run finishes successfully.
@@ -95,6 +98,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	if strings.TrimSpace(userInput) == "" {
 		return "", fmt.Errorf("agent: empty input")
 	}
+
+	ctx, endRun := a.startSpan(ctx, "agent.run")
+	defer endRun()
 
 	maxTurns := a.MaxTurns
 	if maxTurns <= 0 {
@@ -129,6 +135,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		resp, err := a.chat(ctx, messages, toolDefs)
 		if err != nil {
 			a.emit(Event{Kind: EventError, Err: err.Error()})
+			a.spanErr(ctx, err)
 			return "", fmt.Errorf("agent: llm chat: %w", err)
 		}
 
@@ -187,6 +194,8 @@ type toolCallResult struct {
 }
 
 func (a *Agent) chat(ctx context.Context, messages []llm.Message, toolDefs []llm.ToolDef) (llm.Response, error) {
+	ctx, end := a.startSpan(ctx, "llm.chat")
+	defer end()
 	req := llm.Request{Messages: messages, Tools: toolDefs}
 	if a.Stream {
 		if s, ok := a.Provider.(llm.Streamer); ok {
@@ -200,6 +209,23 @@ func (a *Agent) chat(ctx context.Context, messages []llm.Message, toolDefs []llm
 	return a.Provider.Chat(ctx, req)
 }
 
+func (a *Agent) startSpan(ctx context.Context, name string) (context.Context, func()) {
+	if a == nil || a.Tracer == nil {
+		return ctx, func() {}
+	}
+	ctx, sp := a.Tracer.Start(ctx, name)
+	return ctx, sp.End
+}
+
+func (a *Agent) spanErr(ctx context.Context, err error) {
+	if a == nil || a.Tracer == nil || err == nil {
+		return
+	}
+	_, sp := a.Tracer.Start(ctx, "error")
+	sp.RecordError(err)
+	sp.End()
+}
+
 // executeToolCalls runs one assistant tool_calls batch concurrently and
 // returns results aligned with the input slice (model call order).
 func (a *Agent) executeToolCalls(ctx context.Context, registry *tool.Registry, calls []llm.ToolCall) []toolCallResult {
@@ -208,8 +234,10 @@ func (a *Agent) executeToolCalls(ctx context.Context, registry *tool.Registry, c
 		return out
 	}
 	run := func(i int, tc llm.ToolCall) {
+		tctx, end := a.startSpan(ctx, "tool."+tc.Function.Name)
+		defer end()
 		a.emit(Event{Kind: EventToolStart, Tool: tc.Function.Name, ToolID: tc.ID, Args: tc.Function.Arguments})
-		res := registry.ExecuteDetail(ctx, tc.Function.Name, tc.Function.Arguments)
+		res := registry.ExecuteDetail(tctx, tc.Function.Name, tc.Function.Arguments)
 		content, truncated := a.capToolResult(res.Content)
 		out[i] = toolCallResult{content: content, raw: res.Content, truncated: truncated, code: res.Code}
 		ev := Event{

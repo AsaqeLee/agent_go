@@ -114,6 +114,7 @@ func newTaskManager(parent context.Context) (*task.Manager, func()) {
 	mgr := task.NewManager(parent, runner, task.Options{
 		Workers:   envInt("AGENT_TASK_WORKERS", 2),
 		QueueSize: envInt("AGENT_TASK_QUEUE", 64),
+		Store:     resolveTaskStore(),
 	})
 	return mgr, func() {
 		mgr.Stop()

@@ -24,10 +24,12 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/agent"
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/obs"
 	"github.com/asaqelee/agent_go/rag"
 	"github.com/asaqelee/agent_go/retrieve"
 	"github.com/asaqelee/agent_go/session"
@@ -54,6 +56,8 @@ func main() {
 			os.Exit(runIndexCLI(ctx, os.Args[2:]))
 		case "eval":
 			os.Exit(runEvalCLI(ctx, os.Args[2:]))
+		case "serve":
+			os.Exit(runServeCLI(ctx, os.Args[2:]))
 		}
 	}
 
@@ -90,6 +94,7 @@ func main() {
 	}, task.Options{
 		Workers:   envInt("AGENT_TASK_WORKERS", 2),
 		QueueSize: envInt("AGENT_TASK_QUEUE", 64),
+		Store:     resolveTaskStore(),
 	})
 	defer mgr.Stop()
 
@@ -194,6 +199,18 @@ func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string, extr
 	} else {
 		a.Approver = newStdinApprover()
 	}
+	a.Redact = tool.RedactSecrets
+	if ms := envInt("AGENT_TOOL_TIMEOUT_MS", 60_000); ms > 0 {
+		a.ToolTimeout = time.Duration(ms) * time.Millisecond
+	}
+	a.MaxToolConcurrency = envInt("AGENT_TOOL_CONCURRENCY", 8)
+	if p := env("AGENT_OTEL_JSONL", ""); p != "" && p != "off" {
+		if tr, err := obs.File(p); err != nil {
+			fmt.Fprintf(os.Stderr, "otel jsonl: %v\n", err)
+		} else {
+			a.Tracer = tr
+		}
+	}
 	if docsRoot != "" {
 		// Explicit system prompt merges profile + sandboxed KB guidance.
 		a.SystemPrompt = defaultPromptWithDocs(docsRoot)
@@ -233,6 +250,14 @@ func resolveDocsRoot() string {
 		return "examples/kb"
 	}
 	return ""
+}
+
+func resolveTaskStore() task.Store {
+	path := env("AGENT_TASK_STORE", ".agent_tasks.json")
+	if path == "" || path == "off" || path == "-" {
+		return nil
+	}
+	return &task.FileStore{Path: path}
 }
 
 func resolveRetriever(docsRoot string, provider *llm.OpenAI) retrieve.Retriever {
