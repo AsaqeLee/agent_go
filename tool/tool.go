@@ -49,6 +49,8 @@ func Defs(tools []Tool) []llm.ToolDef {
 // Registry looks up tools by name and executes them.
 type Registry struct {
 	byName map[string]Tool
+	// Policy wraps Run with timeout / approval / redaction. Zero value is a no-op.
+	Policy Policy
 }
 
 // NewRegistry builds a registry from a tool list.
@@ -58,25 +60,6 @@ func NewRegistry(tools []Tool) *Registry {
 		m[t.Name()] = t
 	}
 	return &Registry{byName: m}
-}
-
-// Execute runs a tool by name. Unknown tools return an error string (never panic).
-func (r *Registry) Execute(ctx context.Context, name, argsJSON string) string {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
-	t, ok := r.byName[name]
-	if !ok {
-		return fmt.Sprintf("error: unknown tool %q", name)
-	}
-	result, err := t.Run(ctx, argsJSON)
-	if err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
-	return result
 }
 
 // ParseArgs unmarshals model-provided JSON into a typed struct.

@@ -32,9 +32,14 @@ Thumbs.db
 *.pem
 *.key
 
-# Durable user profile (local)
+# Durable user profile / session / index (local)
 .agent_memory.json
 *.agent_memory.json
+.agent_sessions/
+.agent_index.json
+.agent_tasks.json
+.agent_tasks/
+.agent_otel.jsonl
 
 # Debug
 debug

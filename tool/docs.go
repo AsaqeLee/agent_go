@@ -3,11 +3,12 @@ package tool
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/asaqelee/agent_go/retrieve"
 )
 
 const (
@@ -18,16 +19,30 @@ const (
 
 // KnowledgeTools returns list/read/search tools rooted at docsRoot (sandbox).
 // docsRoot must be an existing directory; empty root returns nil.
+// search_docs uses a substring Grep retriever.
 func KnowledgeTools(docsRoot string) []Tool {
+	return KnowledgeToolsWith(docsRoot, nil)
+}
+
+// KnowledgeToolsWith is KnowledgeTools with an explicit Retriever for search_docs.
+// A nil retriever installs retrieve.Grep over the same sandbox root.
+func KnowledgeToolsWith(docsRoot string, r retrieve.Retriever) []Tool {
 	root, err := sanitizeRoot(docsRoot)
 	if err != nil {
 		return nil
 	}
 	kb := &docRoot{root: root}
+	if r == nil {
+		r = retrieve.NewGrep(root, retrieve.GrepLimits{
+			MaxHits:  maxSearchHits,
+			MaxFiles: maxSearchFiles,
+			MaxBytes: maxDocReadBytes,
+		})
+	}
 	return []Tool{
 		ListDocs{kb: kb},
 		ReadDoc{kb: kb},
-		SearchDocs{kb: kb},
+		SearchDocs{kb: kb, retriever: r},
 	}
 }
 
@@ -246,13 +261,16 @@ func (t ReadDoc) Run(ctx context.Context, argsJSON string) (string, error) {
 	return b.String(), nil
 }
 
-// SearchDocs searches text files under the knowledge root for a substring (case-insensitive).
-type SearchDocs struct{ kb *docRoot }
+// SearchDocs searches the knowledge base via a Retriever (grep by default).
+type SearchDocs struct {
+	kb        *docRoot
+	retriever retrieve.Retriever
+}
 
 func (SearchDocs) Name() string { return "search_docs" }
 func (SearchDocs) Description() string {
-	return "Search the local knowledge base for a case-insensitive substring. " +
-		"Returns matching file paths and line snippets. Use to locate answers before read_doc."
+	return "Search the local knowledge base. Returns matching file paths and snippets. " +
+		"Use to locate answers before read_doc."
 }
 func (SearchDocs) Parameters() map[string]any {
 	return map[string]any{
@@ -286,66 +304,32 @@ func (t SearchDocs) Run(ctx context.Context, argsJSON string) (string, error) {
 	if q == "" {
 		return "", fmt.Errorf("query is empty")
 	}
-	qLower := strings.ToLower(q)
+	if t.retriever == nil {
+		return "", fmt.Errorf("no retriever configured")
+	}
 
-	var (
-		b        strings.Builder
-		hits     int
-		fileScan int
-	)
-	fmt.Fprintf(&b, "query: %s\n", q)
-
-	err = filepath.WalkDir(t.kb.root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && path != t.kb.root {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") || !isTextDoc(d.Name()) {
-			return nil
-		}
-		fileScan++
-		if fileScan > maxSearchFiles {
-			return fs.SkipAll
-		}
-		data, err := os.ReadFile(path)
-		if err != nil || !utf8.Valid(data) {
-			return nil
-		}
-		if len(data) > maxDocReadBytes {
-			data = data[:maxDocReadBytes]
-		}
-		rel, _ := filepath.Rel(t.kb.root, path)
-		lines := strings.Split(string(data), "\n")
-		for i, line := range lines {
-			if hits >= maxSearchHits {
-				return fs.SkipAll
-			}
-			if strings.Contains(strings.ToLower(line), qLower) {
-				snippet := strings.TrimSpace(line)
-				if utf8.RuneCountInString(snippet) > 160 {
-					snippet = string([]rune(snippet)[:160]) + "…"
-				}
-				fmt.Fprintf(&b, "%s:%d: %s\n", filepath.ToSlash(rel), i+1, snippet)
-				hits++
-			}
-		}
-		return nil
-	})
-	if err != nil && err != fs.SkipAll {
+	hits, err := t.retriever.Retrieve(ctx, retrieve.Query{Text: q, K: maxSearchHits})
+	if err != nil {
 		return "", err
 	}
-	if hits == 0 {
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "query: %s\n", q)
+	if len(hits) == 0 {
 		b.WriteString("(no hits)\n")
-	} else {
-		fmt.Fprintf(&b, "hits: %d (capped at %d)\n", hits, maxSearchHits)
+		return strings.TrimSpace(b.String()), nil
 	}
+	for _, c := range hits {
+		path := c.Path
+		if path == "" {
+			path = c.ID
+		}
+		if line := c.Meta["line"]; line != "" {
+			fmt.Fprintf(&b, "%s:%s: %s\n", path, line, c.Text)
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %s\n", path, c.Text)
+	}
+	fmt.Fprintf(&b, "hits: %d (capped at %d)\n", len(hits), maxSearchHits)
 	return strings.TrimSpace(b.String()), nil
 }

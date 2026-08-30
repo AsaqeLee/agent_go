@@ -28,6 +28,7 @@ import (
 
 	"github.com/asaqelee/agent_go/agent"
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/session"
 	"github.com/asaqelee/agent_go/task"
 	"github.com/asaqelee/agent_go/tool"
 )
@@ -51,6 +52,7 @@ func main() {
 	provider, mem, memPath := buildProviderAndMemory()
 	docsRoot := resolveDocsRoot()
 	a := newSyncAgent(provider, mem, docsRoot)
+	attachSession(a)
 
 	// One-shot sync question
 	if len(os.Args) > 1 {
@@ -83,8 +85,8 @@ func main() {
 	fmt.Println("agent_go — chat + memory + knowledge base + async tasks")
 	fmt.Println("  chat: message | /new | /new all | /history [full] | /usage | /memory | /memory clear")
 	fmt.Println("  task: /task submit|list|status|wait|cancel")
-	fmt.Printf("model=%s base=%s max_history=%d memory=%s docs=%s workers=%d\n",
-		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displayDocs(docsRoot), envInt("AGENT_TASK_WORKERS", 2))
+	fmt.Printf("model=%s base=%s max_history=%d memory=%s session=%s docs=%s workers=%d\n",
+		provider.Model, provider.BaseURL, a.MaxHistoryMessages, memPath, displaySession(a), displayDocs(docsRoot), envInt("AGENT_TASK_WORKERS", 2))
 	if docsRoot != "" {
 		fmt.Println("  kb demo: try「年假有多少天？请先 search_docs 再回答」")
 	}
@@ -298,13 +300,55 @@ func handleInteractiveTask(ctx context.Context, mgr *task.Manager, rest string) 
 }
 
 func ask(ctx context.Context, a *agent.Agent, question string) error {
+	streamed := false
+	prev := a.OnEvent
+	a.Stream = envBool("AGENT_STREAM", true)
+	a.OnEvent = func(e agent.Event) {
+		if prev != nil {
+			prev(e)
+		}
+		if e.Kind == agent.EventToken {
+			streamed = true
+			fmt.Print(e.Token)
+		}
+	}
 	answer, err := a.Run(ctx, question)
+	a.OnEvent = prev
 	if err != nil {
 		return err
 	}
 	fmt.Println()
-	fmt.Println(answer)
+	if !streamed {
+		fmt.Println(answer)
+	}
 	return nil
+}
+
+func attachSession(a *agent.Agent) {
+	dir := env("AGENT_SESSION_DIR", ".agent_sessions")
+	if dir == "off" || dir == "-" {
+		return
+	}
+	a.SessionID = env("AGENT_SESSION_ID", "default")
+	a.Sessions = &session.File{Dir: dir}
+	if err := a.RestoreSession(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "session restore: %v\n", err)
+		return
+	}
+	if n := len(a.History()); n > 0 {
+		fmt.Fprintf(os.Stderr, "restored session id=%s messages=%d\n", a.SessionID, n)
+	}
+}
+
+func displaySession(a *agent.Agent) string {
+	if a.Sessions == nil {
+		return "(off)"
+	}
+	id := a.SessionID
+	if id == "" {
+		id = "default"
+	}
+	return id
 }
 
 func printUsage(a *agent.Agent) {

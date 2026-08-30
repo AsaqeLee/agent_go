@@ -16,9 +16,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/session"
 	"github.com/asaqelee/agent_go/tool"
 )
 
@@ -53,6 +55,23 @@ type Agent struct {
 	Verbose bool
 	// Log is the optional verbose sink; defaults to os.Stderr when Verbose is true.
 	Log io.Writer
+
+	// SessionID selects which transcript Sessions Load/Save. Empty → "default".
+	SessionID string
+	// Sessions persists history after a successful Run. Nil disables disk/memory restore.
+	Sessions session.Store
+	// OnEvent receives tokens, tool timings, and completion (CLI streaming / HTTP SSE).
+	OnEvent func(Event)
+	// Stream uses Provider.(llm.Streamer) when set and the provider implements it.
+	Stream bool
+	// ToolTimeout caps each Tool.Run. Zero means no extra timeout.
+	ToolTimeout time.Duration
+	// MaxToolConcurrency limits same-turn fan-out. Zero means unlimited (one goroutine per call).
+	MaxToolConcurrency int
+	// Approver gates tools whose Annotations.NeedsApproval is true. Nil allows.
+	Approver tool.Approver
+	// Redact mutates tool Content before it enters history / the model. Nil is identity.
+	Redact func(name, content string) string
 
 	// history is short-term memory across Run calls (system + user/assistant/tool turns).
 	// Only updated when a Run finishes successfully.
@@ -90,6 +109,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	})
 
 	registry := tool.NewRegistry(a.Tools)
+	registry.Policy = tool.Policy{
+		Timeout:  a.ToolTimeout,
+		Approver: a.Approver,
+		Redact:   a.Redact,
+	}
 	toolDefs := tool.Defs(a.Tools)
 	var runUsage llm.Usage
 
@@ -102,11 +126,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		// Refresh structured profile each Chat so mid-turn memory_set/echo_note is visible next step.
 		messages = upsertProfile(messages, a.Memory)
 
-		resp, err := a.Provider.Chat(ctx, llm.Request{
-			Messages: messages,
-			Tools:    toolDefs,
-		})
+		resp, err := a.chat(ctx, messages, toolDefs)
 		if err != nil {
+			a.emit(Event{Kind: EventError, Err: err.Error()})
 			return "", fmt.Errorf("agent: llm chat: %w", err)
 		}
 
@@ -123,7 +145,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			if runUsage.TotalTokens > 0 || runUsage.Calls > 0 {
 				a.log("usage: last %s | session %s", runUsage.Format(), a.sessionUsage.Format())
 			}
-			return strings.TrimSpace(assistant.Content), nil
+			out := strings.TrimSpace(assistant.Content)
+			a.emit(Event{Kind: EventDone, Content: out, Usage: runUsage})
+			return out, nil
 		}
 
 		// Case B: same-turn tool_calls fan out, then join. Results are
@@ -137,9 +161,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		for i, tc := range assistant.ToolCalls {
 			result, raw, truncated := results[i].content, results[i].raw, results[i].truncated
 			if truncated {
-				a.log("  ← %s (truncated %d→%d chars) %s", tc.Function.Name, utf8.RuneCountInString(raw), utf8.RuneCountInString(result), preview(result, 200))
+				a.log("  ← %s %s (truncated %d→%d chars) %s", tc.Function.Name, results[i].code, utf8.RuneCountInString(raw), utf8.RuneCountInString(result), preview(result, 200))
 			} else {
-				a.log("  ← %s %s", tc.Function.Name, preview(result, 200))
+				a.log("  ← %s %s %s", tc.Function.Name, results[i].code, preview(result, 200))
 			}
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
@@ -150,13 +174,30 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
+	err := fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
+	a.emit(Event{Kind: EventError, Err: err.Error()})
+	return "", err
 }
 
 type toolCallResult struct {
 	content   string
 	raw       string
 	truncated bool
+	code      string
+}
+
+func (a *Agent) chat(ctx context.Context, messages []llm.Message, toolDefs []llm.ToolDef) (llm.Response, error) {
+	req := llm.Request{Messages: messages, Tools: toolDefs}
+	if a.Stream {
+		if s, ok := a.Provider.(llm.Streamer); ok {
+			return s.ChatStream(ctx, req, func(d llm.Delta) {
+				if d.Content != "" {
+					a.emit(Event{Kind: EventToken, Token: d.Content})
+				}
+			})
+		}
+	}
+	return a.Provider.Chat(ctx, req)
 }
 
 // executeToolCalls runs one assistant tool_calls batch concurrently and
@@ -166,21 +207,42 @@ func (a *Agent) executeToolCalls(ctx context.Context, registry *tool.Registry, c
 	if len(calls) == 0 {
 		return out
 	}
+	run := func(i int, tc llm.ToolCall) {
+		a.emit(Event{Kind: EventToolStart, Tool: tc.Function.Name, ToolID: tc.ID, Args: tc.Function.Arguments})
+		res := registry.ExecuteDetail(ctx, tc.Function.Name, tc.Function.Arguments)
+		content, truncated := a.capToolResult(res.Content)
+		out[i] = toolCallResult{content: content, raw: res.Content, truncated: truncated, code: res.Code}
+		ev := Event{
+			Kind:     EventToolEnd,
+			Tool:     tc.Function.Name,
+			ToolID:   tc.ID,
+			Content:  content,
+			Code:     res.Code,
+			Duration: res.Duration,
+		}
+		if res.Err != nil {
+			ev.Err = res.Err.Error()
+		}
+		a.emit(ev)
+	}
 	if len(calls) == 1 {
-		raw := registry.Execute(ctx, calls[0].Function.Name, calls[0].Function.Arguments)
-		content, truncated := a.capToolResult(raw)
-		out[0] = toolCallResult{content: content, raw: raw, truncated: truncated}
+		run(0, calls[0])
 		return out
 	}
+	conc := a.MaxToolConcurrency
+	if conc <= 0 || conc > len(calls) {
+		conc = len(calls)
+	}
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, conc)
 	wg.Add(len(calls))
 	for i, tc := range calls {
 		i, tc := i, tc
 		go func() {
 			defer wg.Done()
-			raw := registry.Execute(ctx, tc.Function.Name, tc.Function.Arguments)
-			content, truncated := a.capToolResult(raw)
-			out[i] = toolCallResult{content: content, raw: raw, truncated: truncated}
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			run(i, tc)
 		}()
 	}
 	wg.Wait()
@@ -202,6 +264,7 @@ func (a *Agent) commitHistory(ctx context.Context, messages []llm.Message) {
 		a.log("history trim: dropped %d oldest user-turn(s), summary updated, now %d messages (%s)",
 			dropped, len(a.history), a.Stats().FormatStats())
 	}
+	a.persistSession(ctx)
 }
 
 func stripProfileMessages(msgs []llm.Message) []llm.Message {
@@ -220,6 +283,42 @@ func (a *Agent) Reset() {
 	a.history = nil
 	a.lastUsage = llm.Usage{}
 	a.sessionUsage = llm.Usage{}
+	if a.Sessions != nil {
+		_ = a.Sessions.Delete(context.Background(), a.sessionID())
+	}
+}
+
+func (a *Agent) sessionID() string {
+	id := strings.TrimSpace(a.SessionID)
+	if id == "" {
+		return "default"
+	}
+	return id
+}
+
+func (a *Agent) persistSession(ctx context.Context) {
+	if a.Sessions == nil {
+		return
+	}
+	if err := a.Sessions.Save(ctx, a.sessionID(), a.history); err != nil {
+		a.log("session save: %v", err)
+	}
+}
+
+// RestoreSession loads history from Sessions. No-op when Sessions is nil or empty.
+func (a *Agent) RestoreSession(ctx context.Context) error {
+	if a.Sessions == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	msgs, err := a.Sessions.Load(ctx, a.sessionID())
+	if err != nil {
+		return err
+	}
+	a.history = msgs
+	return nil
 }
 
 // LastUsage returns token accounting for the most recent successful Run.

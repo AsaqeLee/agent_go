@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/asaqelee/agent_go/retrieve"
 )
 
 // GetTime returns the current local time (parameter-less tool demo).
@@ -289,6 +291,11 @@ func (WordCount) Run(_ context.Context, argsJSON string) (string, error) {
 // store may be nil (notes become ephemeral).
 // docsRoot enables list_docs/read_doc/search_docs when non-empty and valid.
 func DefaultTools(store MemoryStore, docsRoot string) []Tool {
+	return DefaultToolsWith(store, docsRoot, nil)
+}
+
+// DefaultToolsWith is DefaultTools plus an optional Retriever for search_docs.
+func DefaultToolsWith(store MemoryStore, docsRoot string, r retrieve.Retriever) []Tool {
 	tools := []Tool{
 		GetTime{},
 		Calculator{},
@@ -298,7 +305,7 @@ func DefaultTools(store MemoryStore, docsRoot string) []Tool {
 		WordCount{},
 	}
 	if docsRoot != "" {
-		tools = append(tools, KnowledgeTools(docsRoot)...)
+		tools = append(tools, KnowledgeToolsWith(docsRoot, r)...)
 	}
 	return tools
 }
