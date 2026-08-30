@@ -97,6 +97,7 @@ func newTaskManager(parent context.Context) (*task.Manager, func()) {
 		mem.Path = memPath
 	}
 
+	extra, stopMCP := startMCP(parent)
 	runner := func(ctx context.Context, goal string) (string, error) {
 		m := mem
 		if memPath != "" {
@@ -105,7 +106,7 @@ func newTaskManager(parent context.Context) (*task.Manager, func()) {
 			}
 		}
 		docs := resolveDocsRoot()
-		a := newSyncAgent(provider, m, docs)
+		a := newSyncAgent(provider, m, docs, extra)
 		a.Verbose = envBool("AGENT_VERBOSE", false)
 		return a.Run(ctx, goal)
 	}
@@ -114,7 +115,10 @@ func newTaskManager(parent context.Context) (*task.Manager, func()) {
 		Workers:   envInt("AGENT_TASK_WORKERS", 2),
 		QueueSize: envInt("AGENT_TASK_QUEUE", 64),
 	})
-	return mgr, mgr.Stop
+	return mgr, func() {
+		mgr.Stop()
+		stopMCP()
+	}
 }
 
 func printTask(tk task.Task) {

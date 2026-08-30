@@ -57,9 +57,12 @@ func main() {
 		}
 	}
 
+	mcpTools, stopMCP := startMCP(ctx)
+	defer stopMCP()
+
 	provider, mem, memPath := buildProviderAndMemory()
 	docsRoot := resolveDocsRoot()
-	a := newSyncAgent(provider, mem, docsRoot)
+	a := newSyncAgent(provider, mem, docsRoot, mcpTools)
 	attachSession(a)
 
 	// One-shot sync question
@@ -81,7 +84,7 @@ func main() {
 				mem2 = m
 			}
 		}
-		ag := newSyncAgent(provider, mem2, docsRoot)
+		ag := newSyncAgent(provider, mem2, docsRoot, mcpTools)
 		ag.Verbose = envBool("AGENT_VERBOSE", false)
 		return ag.Run(taskCtx, goal)
 	}, task.Options{
@@ -169,18 +172,27 @@ func buildProviderAndMemory() (*llm.OpenAI, *agent.Memory, string) {
 	return provider, mem, memPath
 }
 
-func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string) *agent.Agent {
+func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string, extra []tool.Tool) *agent.Agent {
 	provider.MaxRetries = envInt("AGENT_LLM_MAX_RETRIES", llm.DefaultMaxRetries)
 	provider.EmbedModel = env("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+	tools := tool.DefaultToolsWith(mem, docsRoot, resolveRetriever(docsRoot, provider))
+	if len(extra) > 0 {
+		tools = append(tools, extra...)
+	}
 	a := &agent.Agent{
 		Provider:            provider,
 		Memory:              mem,
-		Tools:               tool.DefaultToolsWith(mem, docsRoot, resolveRetriever(docsRoot, provider)),
+		Tools:               tools,
 		MaxTurns:            envInt("AGENT_MAX_TURNS", 8),
 		MaxHistoryMessages:  envInt("AGENT_MAX_HISTORY_MESSAGES", 40),
 		KeepRecentFullTurns: envInt("AGENT_KEEP_RECENT_FULL_TURNS", 1),
 		DisableLLMSummary:   envBool("AGENT_DISABLE_LLM_SUMMARY", false),
 		Verbose:             envBool("AGENT_VERBOSE", true),
+	}
+	if envBool("AGENT_MCP_AUTO_APPROVE", false) {
+		a.Approver = allowAll{}
+	} else {
+		a.Approver = newStdinApprover()
 	}
 	if docsRoot != "" {
 		// Explicit system prompt merges profile + sandboxed KB guidance.

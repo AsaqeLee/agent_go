@@ -1,0 +1,10 @@
+{
+  "servers": [
+    {
+      "name": "echo",
+      "command": "go",
+      "args": ["run", "./examples/mcp-echo"],
+      "allow": ["*"]
+    }
+  ]
+}
