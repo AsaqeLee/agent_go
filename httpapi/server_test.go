@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asaqelee/agent_go/agent"
+	"github.com/asaqelee/agent_go/channel"
 	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/tool"
 )
@@ -131,5 +133,170 @@ func TestToolCallJSON(t *testing.T) {
 	}
 	if got.Output != "4" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+type blocking struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blocking) Chat(ctx context.Context, _ llm.Request) (llm.Response, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-b.release:
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "late"}}, nil
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
+func TestRunRegistryGetAndConflict(t *testing.T) {
+	b := &blocking{started: make(chan struct{}, 1), release: make(chan struct{})}
+	h := Handler(Deps{NewAgent: func(string) *agent.Agent {
+		return &agent.Agent{Provider: b, MaxTurns: 2}
+	}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	waitFalse := `{"input":"hi","session_id":"s1","wait":false}`
+	res, err := http.Post(srv.URL+"/v1/runs", "application/json", bytes.NewReader([]byte(waitFalse)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status=%d %s", res.StatusCode, body)
+	}
+	var first runResponse
+	if err := json.NewDecoder(res.Body).Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	select {
+	case <-b.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("not started")
+	}
+
+	res, err = http.Post(srv.URL+"/v1/runs", "application/json", bytes.NewReader([]byte(`{"input":"two","session_id":"s1"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d %s", res.StatusCode, body)
+	}
+
+	gres, err := http.Get(srv.URL + "/v1/runs/" + first.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got runResponse
+	_ = json.NewDecoder(gres.Body).Decode(&got)
+	gres.Body.Close()
+	if got.Status != "running" || got.RunID != first.RunID {
+		t.Fatalf("%+v", got)
+	}
+
+	cres, err := http.Post(srv.URL+"/v1/runs/"+first.RunID+"/cancel", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.NewDecoder(cres.Body).Decode(&got)
+	cres.Body.Close()
+	if got.Status != "cancelled" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestMetricsAndRequestID(t *testing.T) {
+	h := Handler(Deps{NewAgent: func(string) *agent.Agent {
+		return &agent.Agent{
+			Provider: &scripted{responses: []llm.Response{
+				{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}},
+			}},
+			MaxTurns: 2,
+		}
+	}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/runs", bytes.NewReader([]byte(`{"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "abc123")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.Header.Get("X-Request-Id") != "abc123" {
+		t.Fatalf("rid=%s", res.Header.Get("X-Request-Id"))
+	}
+	mres, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(mres.Body)
+	mres.Body.Close()
+	s := string(body)
+	if !strings.Contains(s, "agent_runs_started 1") || !strings.Contains(s, "agent_runs_succeeded 1") {
+		t.Fatalf("metrics=%s", s)
+	}
+}
+
+func TestMessagesUsesChannel(t *testing.T) {
+	ch := &channel.Memory{}
+	h := Handler(Deps{
+		Channel: ch,
+		NewAgent: func(string) *agent.Agent {
+			return &agent.Agent{
+				Provider: &scripted{responses: []llm.Response{
+					{Message: llm.Message{Role: llm.RoleAssistant, Content: "pong"}},
+				}},
+				MaxTurns: 2,
+			}
+		},
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Post(srv.URL+"/v1/messages", "application/json", bytes.NewReader([]byte(`{"text":"ping","session_id":"im","user":"u"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var got runResponse
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Output != "pong" {
+		t.Fatalf("%+v", got)
+	}
+	tr := ch.Transcript()
+	if len(tr) < 2 {
+		t.Fatalf("transcript=%+v", tr)
+	}
+}
+
+func TestChatErrorIncrementsMetric(t *testing.T) {
+	h := Handler(Deps{NewAgent: func(string) *agent.Agent {
+		return &agent.Agent{Provider: &scripted{}, MaxTurns: 2} // empty → canceled
+	}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Post(srv.URL+"/v1/runs", "application/json", bytes.NewReader([]byte(`{"input":"x"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	mres, _ := http.Get(srv.URL + "/metrics")
+	body, _ := io.ReadAll(mres.Body)
+	mres.Body.Close()
+	if !strings.Contains(string(body), "agent_runs_failed 1") {
+		t.Fatalf("%s", body)
 	}
 }

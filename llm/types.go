@@ -59,6 +59,8 @@ type Request struct {
 	Model    string
 	Messages []Message
 	Tools    []ToolDef
+	// Purpose selects a Router slot (chat vs summary). Empty is chat.
+	Purpose Purpose
 }
 
 // Usage is token accounting from one Chat call (OpenAI-compatible usage object).

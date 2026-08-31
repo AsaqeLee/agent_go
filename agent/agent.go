@@ -214,6 +214,12 @@ func (a *Agent) startSpan(ctx context.Context, name string) (context.Context, fu
 		return ctx, func() {}
 	}
 	ctx, sp := a.Tracer.Start(ctx, name)
+	if id := obs.IDFrom(ctx); id != "" {
+		sp.Set("request_id", id)
+	}
+	if a.SessionID != "" {
+		sp.Set("session_id", a.SessionID)
+	}
 	return ctx, sp.End
 }
 

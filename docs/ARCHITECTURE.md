@@ -23,8 +23,11 @@ This repository implements the second shape with these packages:
 | `agent` | The loop; trim/fold/summary; Memory; handoff roster |
 | `task` | Async job queue + workers + optional file store |
 | `httpapi` | `POST /v1/runs` (JSON or SSE) and approvals |
-| `obs` | OTEL-shaped JSONL tracer |
+| `obs` | OTEL-shaped JSONL tracer + request_id + /metrics |
 | `plugin` | `agent.json` catalog |
+| `run` | First-class Run registry (id, session mutex, cancel) |
+| `channel` | IM message exit / entry |
+| `workflow` | Fixed retrieve → answer → emit DAG |
 | `cmd/agent` | CLI wiring |
 | `examples/kb` | Sample corpus + `eval.json` |
 

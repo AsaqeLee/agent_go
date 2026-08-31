@@ -7,7 +7,10 @@ import (
 	"os"
 
 	"github.com/asaqelee/agent_go/agent"
+	"github.com/asaqelee/agent_go/channel"
 	"github.com/asaqelee/agent_go/httpapi"
+	"github.com/asaqelee/agent_go/obs"
+	"github.com/asaqelee/agent_go/run"
 	"github.com/asaqelee/agent_go/session"
 )
 
@@ -31,9 +34,16 @@ func runServeCLI(ctx context.Context, args []string) int {
 	provider, mem, _ := buildProviderAndMemory()
 	docsRoot := resolveDocsRoot()
 	park := httpapi.NewPark()
+	var ch channel.Channel = &channel.Memory{}
+	if u := env("AGENT_CHANNEL_WEBHOOK", ""); u != "" {
+		ch = &channel.Webhook{URL: u}
+	}
 
 	h := httpapi.Handler(httpapi.Deps{
-		Park: park,
+		Park:    park,
+		Runs:    run.NewRegistry(),
+		Metrics: obs.NewMetrics(),
+		Channel: ch,
 		NewAgent: func(sessionID string) *agent.Agent {
 			a := newSyncAgent(provider, mem, docsRoot, mcpTools)
 			attachRoster(a, docsRoot)
@@ -47,7 +57,7 @@ func runServeCLI(ctx context.Context, args []string) int {
 			return a
 		},
 	})
-	fmt.Fprintf(os.Stderr, "agent_go listen %s  POST /v1/runs  GET /healthz\n", *addr)
+	fmt.Fprintf(os.Stderr, "agent_go listen %s  POST /v1/runs  POST /v1/messages  GET /healthz /metrics\n", *addr)
 	if err := httpapi.ListenAndServe(ctx, *addr, h); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

@@ -207,11 +207,14 @@ func (o *OpenAI) doChat(ctx context.Context, body []byte) (Response, bool, error
 }
 
 func httpStatusError(code int, raw []byte) error {
+	msg := ""
 	var parsed chatCompletionsResponse
 	if err := json.Unmarshal(raw, &parsed); err == nil && parsed.Error != nil && parsed.Error.Message != "" {
-		return fmt.Errorf("llm: api error: %s", parsed.Error.Message)
+		msg = parsed.Error.Message
+	} else {
+		msg = truncate(string(raw), 500)
 	}
-	return fmt.Errorf("llm: status %d: %s", code, truncate(string(raw), 500))
+	return &StatusError{Status: code, Msg: msg}
 }
 
 func isRetryableStatus(code int) bool {

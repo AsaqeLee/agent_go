@@ -89,6 +89,12 @@ func (t *JSONL) Start(ctx context.Context, name string) (context.Context, Span) 
 	if parent != nil {
 		sp.traceID = parent.traceID
 		sp.parentID = parent.spanID
+	} else if rid := IDFrom(ctx); rid != "" {
+		sp.traceID = rid
+		sp.attrs["request_id"] = rid
+	}
+	if rid := IDFrom(ctx); rid != "" {
+		sp.attrs["request_id"] = rid
 	}
 	ctx = context.WithValue(ctx, ctxKey{}, sp)
 	return ctx, sp

@@ -52,10 +52,13 @@
 ├── mcp/             # MCP stdio client / 测试用 server
 ├── session/         # 会话 Store
 ├── task/            # 异步任务 + 持久化 Store
-├── httpapi/         # POST /v1/runs SSE
-├── obs/             # JSONL tracer
+├── httpapi/         # POST /v1/runs SSE、/v1/messages、/metrics
+├── run/             # Run 注册表（互斥 / 取消）
+├── channel/         # IM 出口
+├── workflow/        # retrieve → answer → emit
+├── obs/             # JSONL tracer + request_id
 ├── plugin/          # agent.json 目录
-├── cmd/agent/       # CLI：chat / index / eval / serve / plugin / task
+├── cmd/agent/       # CLI：chat / index / eval / serve / plugin / task / workflow
 ├── examples/kb/     # 语料 + eval.json
 ├── examples/mcp-echo/
 └── docs/
@@ -106,7 +109,15 @@ go run ./cmd/agent eval --retriever vector --hash --cases examples/kb/eval.json
 
 # HTTP
 go run ./cmd/agent serve --addr :8080
-# POST /v1/runs  {"input":"...","session_id":"s1","stream":true}
+# POST /v1/runs              {"input":"...","session_id":"s1"}              # 同步（默认 wait=true）
+# POST /v1/runs              {"input":"...","session_id":"s1","wait":false} # 202 + run_id
+# GET  /v1/runs/{id}
+# POST /v1/runs/{id}/cancel
+# POST /v1/messages          {"text":"...","session_id":"s1","user":"u"}    # IM 入口
+# GET  /healthz   GET /metrics
+
+# 固定三步：检索 → 回答 → 发出
+go run ./cmd/agent workflow run --root examples/kb "入职满一年年假几天"
 
 # 插件目录
 go run ./cmd/agent plugin list
@@ -172,6 +183,10 @@ go run ./cmd/agent "帮我算 12 * 34"
 | `AGENT_MCP_CONFIG` | 若存在则 `mcp.json` | MCP 服务器列表 |
 | `AGENT_CONFIG` | 若存在则 `agent.json` | 插件目录 |
 | `AGENT_HTTP_ADDR` | `:8080` | `agent serve` 监听地址 |
+| `AGENT_MODEL_FALLBACK` | _(空)_ | Chat 主模型 5xx/429 时的备模型 |
+| `AGENT_MODEL_SUMMARY` | _(空)_ | trim 摘要用的模型；空则用主模型 |
+| `AGENT_REPO_ROOT` | 自动 `examples/repo` | 只读代码仓沙箱 |
+| `AGENT_CHANNEL_WEBHOOK` | _(空)_ | IM webhook；空则内存 Channel |
 
 ## 作为库使用
 
@@ -238,3 +253,22 @@ go build -o bin/agent ./cmd/agent
 | MaxTurns / 路径沙箱 / 结果截断 / 审批 | 无 allowlist 地把 MCP 工具全塞给模型 |
 
 先掌握 **loop + tools + messages + 边界**，再插 adapter。
+
+生产边界与排障见 [docs/PRODUCTION.md](docs/PRODUCTION.md)。
+
+## 对照企业 Agent 平台职责（缩小版）
+
+| 职责 | 本仓库证据 |
+|------|------------|
+| 会话管理 | `session.Store` + `session_id`；同会话第二个 Run → **409** |
+| 任务 / 运行时编排 | `run.Registry`：`run_id`、查询、**cancel** |
+| 工具调用 | `tool.Tool`、MCP 桥、代码仓 `list_repo`/`read_repo` 沙箱 |
+| 消息流转 | `channel.Channel`（内存 / 飞书形 webhook）；`POST /v1/messages` |
+| 流式 / 函数调用 | SSE `Streamer` + OpenAI tool_calls |
+| 上下文 | trim / fold / summary；summary 可走独立模型 |
+| 多模型 | `llm.Router`：primary → fallback（429/5xx），`Purpose=summary` |
+| RAG | `retrieve.Retriever`：grep 基线 + 向量索引 + `eval.json` |
+| 可观测 | `X-Request-Id`、`/metrics`、JSONL spans |
+| 工作流 vs Agent | `workflow` 三步 DAG vs 开放 loop；两者都保留 |
+
+**刻意不是：** 多实例高可用、真飞书开放平台、Kafka。接口留下了，实现用单进程证明链路。

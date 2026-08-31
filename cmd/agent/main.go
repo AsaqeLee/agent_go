@@ -64,6 +64,8 @@ func main() {
 			os.Exit(runServeCLI(ctx, os.Args[2:]))
 		case "plugin":
 			os.Exit(runPluginCLI(ctx, os.Args[2:]))
+		case "workflow":
+			os.Exit(runWorkflowCLI(ctx, os.Args[2:]))
 		}
 	}
 
@@ -192,8 +194,11 @@ func newSyncAgent(provider *llm.OpenAI, mem *agent.Memory, docsRoot string, extr
 	if len(extra) > 0 {
 		tools = append(tools, extra...)
 	}
+	if repo := resolveRepoRoot(); repo != "" {
+		tools = append(tools, tool.RepoTools(repo)...)
+	}
 	a := &agent.Agent{
-		Provider:            provider,
+		Provider:            wrapRouter(provider),
 		Memory:              mem,
 		Tools:               tools,
 		MaxTurns:            envInt("AGENT_MAX_TURNS", 8),
@@ -243,6 +248,41 @@ Local knowledge base (sandboxed directory at ` + docsRoot + `):
 
 - After tools return, give a concise final answer to the user.
 - Reply in the same language the user uses.`)
+}
+
+func wrapRouter(primary *llm.OpenAI) llm.Provider {
+	r := &llm.Router{Primary: primary}
+	clone := func(model string) *llm.OpenAI {
+		p := llm.NewOpenAI(primary.BaseURL, primary.APIKey, model)
+		p.MaxRetries = primary.MaxRetries
+		p.HTTPClient = primary.HTTPClient
+		p.EmbedModel = primary.EmbedModel
+		return p
+	}
+	if m := env("AGENT_MODEL_FALLBACK", ""); m != "" {
+		r.Fallback = clone(m)
+	}
+	if m := env("AGENT_MODEL_SUMMARY", ""); m != "" {
+		r.Summary = clone(m)
+	}
+	if r.Fallback == nil && r.Summary == nil {
+		return primary
+	}
+	return r
+}
+
+func resolveRepoRoot() string {
+	if v := strings.TrimSpace(os.Getenv("AGENT_REPO_ROOT")); v != "" {
+		if st, err := os.Stat(v); err == nil && st.IsDir() {
+			return v
+		}
+		fmt.Fprintf(os.Stderr, "warning: AGENT_REPO_ROOT=%q not usable\n", v)
+		return ""
+	}
+	if st, err := os.Stat("examples/repo"); err == nil && st.IsDir() {
+		return "examples/repo"
+	}
+	return ""
 }
 
 // resolveDocsRoot returns AGENT_DOCS_ROOT, or examples/kb if present in cwd.

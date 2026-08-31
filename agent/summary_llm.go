@@ -43,6 +43,7 @@ Rules:
 			{Role: llm.RoleSystem, Content: sys},
 			{Role: llm.RoleUser, Content: user},
 		},
+		Purpose: llm.PurposeSummary,
 		// No Tools — pure compression.
 	})
 	if err != nil {

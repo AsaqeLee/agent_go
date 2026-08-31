@@ -46,6 +46,9 @@
 14. ~~MCP stdio + allowlist + 审批~~  
 15. ~~HTTP SSE + 任务落盘 + JSONL spans~~  
 16. ~~handoff specialist + `agent.json` 插件目录~~  
+17. ~~Run 注册表 / 同会话互斥 / cancel / request_id /metrics~~  
+18. ~~模型 Router（fallback + summary）~~  
+19. ~~IM Channel + 代码仓沙箱 + 三步 workflow~~  
 
 进阶：换 Qdrant/OTLP 真 exporter、给 MCP 加 LSP 以外的传输，都只加 adapter。
 
