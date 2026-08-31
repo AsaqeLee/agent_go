@@ -282,6 +282,34 @@ func TestMessagesUsesChannel(t *testing.T) {
 	}
 }
 
+func TestGeneratedSessionIDIsNotDefault(t *testing.T) {
+	h := Handler(Deps{NewAgent: func(string) *agent.Agent {
+		return &agent.Agent{
+			Provider: &scripted{responses: []llm.Response{
+				{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}},
+			}},
+			MaxTurns: 2,
+		}
+	}})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Post(srv.URL+"/v1/runs", "application/json", bytes.NewReader([]byte(`{"input":"hi"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var got runResponse
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID == "" || got.SessionID == "default" {
+		t.Fatalf("session_id=%q", got.SessionID)
+	}
+	if !strings.HasPrefix(got.SessionID, "s_") {
+		t.Fatalf("session_id=%q", got.SessionID)
+	}
+}
+
 func TestChatErrorIncrementsMetric(t *testing.T) {
 	h := Handler(Deps{NewAgent: func(string) *agent.Agent {
 		return &agent.Agent{Provider: &scripted{}, MaxTurns: 2} // empty → canceled

@@ -125,6 +125,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 	for turn := 1; turn <= maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
+			a.recordAttemptUsage(runUsage, false)
 			return "", fmt.Errorf("agent: %w", err)
 		}
 		a.log("── turn %d ──", turn)
@@ -134,6 +135,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 		resp, err := a.chat(ctx, messages, toolDefs)
 		if err != nil {
+			a.recordAttemptUsage(runUsage, false)
 			a.emit(Event{Kind: EventError, Err: err.Error()})
 			a.spanErr(ctx, err)
 			return "", fmt.Errorf("agent: llm chat: %w", err)
@@ -146,8 +148,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		// Case A: no tools → done; commit history, then optional fold + session trim.
 		if len(assistant.ToolCalls) == 0 {
 			a.commitHistory(ctx, messages)
-			a.lastUsage = runUsage
-			a.sessionUsage = a.sessionUsage.Add(runUsage)
+			a.recordAttemptUsage(runUsage, true)
 			a.log("final: %s", assistant.Content)
 			if runUsage.TotalTokens > 0 || runUsage.Calls > 0 {
 				a.log("usage: last %s | session %s", runUsage.Format(), a.sessionUsage.Format())
@@ -182,8 +183,18 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	err := fmt.Errorf("agent: exceeded max turns (%d)", maxTurns)
+	a.recordAttemptUsage(runUsage, false)
 	a.emit(Event{Kind: EventError, Err: err.Error()})
 	return "", err
+}
+
+// recordAttemptUsage stores this Run's token use. Session totals only grow on success
+// so a failed attempt is visible on LastUsage / HTTP Record without polluting SessionUsage.
+func (a *Agent) recordAttemptUsage(u llm.Usage, success bool) {
+	a.lastUsage = u
+	if success {
+		a.sessionUsage = a.sessionUsage.Add(u)
+	}
 }
 
 type toolCallResult struct {
@@ -216,6 +227,9 @@ func (a *Agent) startSpan(ctx context.Context, name string) (context.Context, fu
 	ctx, sp := a.Tracer.Start(ctx, name)
 	if id := obs.IDFrom(ctx); id != "" {
 		sp.Set("request_id", id)
+	}
+	if id := obs.RunIDFrom(ctx); id != "" {
+		sp.Set("run_id", id)
 	}
 	if a.SessionID != "" {
 		sp.Set("session_id", a.SessionID)

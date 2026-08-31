@@ -85,6 +85,45 @@ func TestCancelRunning(t *testing.T) {
 	}
 }
 
+func TestEvictsOldestFinished(t *testing.T) {
+	g := NewRegistry()
+	g.MaxRecords = 2
+	var ids []string
+	for i := 0; i < 3; i++ {
+		rec, err := g.Start(context.Background(), "s"+string(rune('a'+i)), "x", true, func(ctx context.Context, rec Record) (string, llm.Usage, error) {
+			return "ok", llm.Usage{}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, rec.ID)
+	}
+	if _, ok := g.Get(ids[0]); ok {
+		t.Fatal("oldest finished run should be evicted")
+	}
+	if _, ok := g.Get(ids[1]); !ok {
+		t.Fatal("want id 1 kept")
+	}
+	if _, ok := g.Get(ids[2]); !ok {
+		t.Fatal("want id 2 kept")
+	}
+}
+
+func TestTimeoutCancels(t *testing.T) {
+	g := NewRegistry()
+	g.Timeout = 30 * time.Millisecond
+	rec, err := g.Start(context.Background(), "s", "x", true, func(ctx context.Context, rec Record) (string, llm.Usage, error) {
+		<-ctx.Done()
+		return "", llm.Usage{}, ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != StatusCancelled {
+		t.Fatalf("%+v", rec)
+	}
+}
+
 func TestStartWaitFailed(t *testing.T) {
 	g := NewRegistry()
 	rec, err := g.Start(context.Background(), "s", "x", true, func(ctx context.Context, rec Record) (string, llm.Usage, error) {

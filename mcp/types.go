@@ -5,15 +5,15 @@ import "encoding/json"
 const protocolVersion = "2024-11-05"
 
 type rpcRequest struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      int    `json:"id,omitempty"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  any             `json:"params,omitempty"`
 }
 
 type rpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 	Method  string          `json:"method,omitempty"`

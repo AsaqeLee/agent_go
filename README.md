@@ -28,8 +28,8 @@
 | **流式输出** | OpenAI 兼容 SSE；CLI 打 token；`POST /v1/runs` `stream:true` |
 | **会话落盘** | `session.Store`：原子 JSON；跨进程恢复 history |
 | **异步任务** | 队列 + Worker；`AGENT_TASK_STORE` 原子 JSON，重启可恢复 |
-| **HTTP** | `agent serve`：`POST /v1/runs`、SSE、`POST /v1/approvals/{id}` |
-| **可观测** | usage + JSONL span（`agent.run` / `llm.chat` / `tool.*`） |
+| **HTTP** | `agent serve`：`POST /v1/runs`（同步/异步/SSE）、`GET/cancel`、`POST /v1/messages`、`/healthz` `/metrics` |
+| **可观测** | usage（含失败 attempt）、`X-Request-Id`、JSONL span、`/metrics` |
 | **Handoff** | `handoff` 工具把子任务交给 specialist（默认 KB `docs`） |
 | **插件目录** | `agent.json` / `agent plugin list`：retriever、MCP、specialists |
 | **OpenAI 兼容** | 官方 API / Ollama / DeepSeek 等 `/v1/chat/completions` + `/embeddings` |

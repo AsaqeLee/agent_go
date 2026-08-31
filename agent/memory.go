@@ -51,6 +51,18 @@ func NewMemory() *Memory {
 
 // LoadMemory reads profile fields from path. Missing file → empty Memory with Path set.
 func LoadMemory(path string) (*Memory, error) {
+	unlock := lockMemoryPath(path)
+	defer unlock()
+	var out *Memory
+	err := withFileLock(path, func() error {
+		m, err := readMemoryFile(path)
+		out = m
+		return err
+	})
+	return out, err
+}
+
+func readMemoryFile(path string) (*Memory, error) {
 	m := &Memory{Path: path}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -101,7 +113,11 @@ func (m *Memory) saveLocked() error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(m.Path, data, 0o600)
+	unlock := lockMemoryPath(m.Path)
+	defer unlock()
+	return withFileLock(m.Path, func() error {
+		return os.WriteFile(m.Path, data, 0o600)
+	})
 }
 
 // Empty reports whether any field is set.

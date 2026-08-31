@@ -90,7 +90,11 @@ func runEvalCLI(ctx context.Context, args []string) int {
 		if !it.Hit {
 			mark = "MISS"
 		}
-		fmt.Printf("  %-5s %-16s path=%s score=%.3f %s\n", mark, it.ID, it.Path, it.Score, it.Reason)
+		top1 := "-"
+		if it.Top1 {
+			top1 = "top1"
+		}
+		fmt.Printf("  %-5s %-5s %-16s path=%s score=%.3f %s\n", mark, top1, it.ID, it.Path, it.Score, it.Reason)
 	}
 	if rep.Hits < rep.Total {
 		return 1

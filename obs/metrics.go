@@ -17,6 +17,7 @@ type Metrics struct {
 	RunsCancelled atomic.Int64
 	ChatErrors    atomic.Int64
 	ToolErrors    atomic.Int64
+	ChannelErrors atomic.Int64
 	LLMChatMsLast atomic.Int64
 	InFlight      atomic.Int64
 }
@@ -59,6 +60,7 @@ func (m *Metrics) Format(inFlight int) string {
 	fmt.Fprintf(&b, "agent_runs_in_flight %d\n", inFlight)
 	fmt.Fprintf(&b, "agent_chat_errors %d\n", m.ChatErrors.Load())
 	fmt.Fprintf(&b, "agent_tool_errors %d\n", m.ToolErrors.Load())
+	fmt.Fprintf(&b, "agent_channel_errors %d\n", m.ChannelErrors.Load())
 	fmt.Fprintf(&b, "agent_llm_chat_ms_last %d\n", m.LLMChatMsLast.Load())
 	return b.String()
 }

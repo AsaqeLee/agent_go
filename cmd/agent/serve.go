@@ -11,6 +11,8 @@ import (
 	"github.com/asaqelee/agent_go/httpapi"
 	"github.com/asaqelee/agent_go/obs"
 	"github.com/asaqelee/agent_go/run"
+	"time"
+
 	"github.com/asaqelee/agent_go/session"
 )
 
@@ -38,12 +40,18 @@ func runServeCLI(ctx context.Context, args []string) int {
 	if u := env("AGENT_CHANNEL_WEBHOOK", ""); u != "" {
 		ch = &channel.Webhook{URL: u}
 	}
+	reg := run.NewRegistry()
+	if ms := envInt("AGENT_RUN_TIMEOUT_MS", 180_000); ms > 0 {
+		reg.Timeout = time.Duration(ms) * time.Millisecond
+	}
+	sessDir := env("AGENT_SESSION_DIR", ".agent_sessions")
 
 	h := httpapi.Handler(httpapi.Deps{
-		Park:    park,
-		Runs:    run.NewRegistry(),
-		Metrics: obs.NewMetrics(),
-		Channel: ch,
+		Park:       park,
+		Runs:       reg,
+		Metrics:    obs.NewMetrics(),
+		Channel:    ch,
+		SessionDir: sessDir,
 		NewAgent: func(sessionID string) *agent.Agent {
 			a := newSyncAgent(provider, mem, docsRoot, mcpTools)
 			attachRoster(a, docsRoot)

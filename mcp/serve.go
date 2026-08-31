@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -60,14 +61,14 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, info ImplInfo, tools [
 		}
 		var req struct {
 			JSONRPC string          `json:"jsonrpc"`
-			ID      int             `json:"id,omitempty"`
+			ID      json.RawMessage `json:"id,omitempty"`
 			Method  string          `json:"method"`
 			Params  json.RawMessage `json:"params,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &req); err != nil {
 			continue
 		}
-		if req.ID == 0 && strings.HasPrefix(req.Method, "notifications/") {
+		if len(bytes.TrimSpace(req.ID)) == 0 && strings.HasPrefix(req.Method, "notifications/") {
 			continue
 		}
 		var result any
@@ -101,7 +102,7 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, info ImplInfo, tools [
 			}
 			result = callResult{Content: []contentPart{{Type: "text", Text: out}}}
 		default:
-			if req.ID == 0 {
+			if len(bytes.TrimSpace(req.ID)) == 0 {
 				continue
 			}
 			rpcErr = &rpcError{Code: -32601, Message: "unknown method " + req.Method}

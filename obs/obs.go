@@ -44,20 +44,29 @@ func Nop() Tracer { return nopTracer{} }
 
 // JSONL writes one JSON object per finished span (OTLP-inspired fields).
 type JSONL struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu     sync.Mutex
+	out    io.Writer
+	closer io.Closer
 }
 
 // NewJSONL traces to w. Each line is one span.
 func NewJSONL(w io.Writer) *JSONL { return &JSONL{out: w} }
 
-// File opens path append-only for JSONL traces.
+// File opens path append-only for JSONL traces. Caller may Close.
 func File(path string) (*JSONL, error) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	return NewJSONL(f), nil
+	return &JSONL{out: f, closer: f}, nil
+}
+
+// Close closes the underlying file when opened via File.
+func (t *JSONL) Close() error {
+	if t == nil || t.closer == nil {
+		return nil
+	}
+	return t.closer.Close()
 }
 
 type span struct {
@@ -95,6 +104,9 @@ func (t *JSONL) Start(ctx context.Context, name string) (context.Context, Span) 
 	}
 	if rid := IDFrom(ctx); rid != "" {
 		sp.attrs["request_id"] = rid
+	}
+	if runID := RunIDFrom(ctx); runID != "" {
+		sp.attrs["run_id"] = runID
 	}
 	ctx = context.WithValue(ctx, ctxKey{}, sp)
 	return ctx, sp

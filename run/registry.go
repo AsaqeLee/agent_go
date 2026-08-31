@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/asaqelee/agent_go/llm"
+	"github.com/asaqelee/agent_go/obs"
 )
 
 // Status is the Run state machine.
@@ -23,14 +26,18 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
+const defaultMaxRecords = 512
+
 // Record is a snapshot of one Run.
 type Record struct {
 	ID         string    `json:"id"`
 	SessionID  string    `json:"session_id"`
+	RequestID  string    `json:"request_id,omitempty"`
 	Input      string    `json:"input,omitempty"`
 	Output     string    `json:"output,omitempty"`
 	Err        string    `json:"error,omitempty"`
 	Status     Status    `json:"status"`
+	ChatError  bool      `json:"chat_error,omitempty"`
 	Usage      llm.Usage `json:"usage"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
@@ -56,9 +63,11 @@ type Runner func(ctx context.Context, rec Record) (output string, usage llm.Usag
 
 // Registry stores live and finished runs in process memory.
 type Registry struct {
-	mu        sync.Mutex
-	byID      map[string]*live
-	bySession map[string]string // session → running id
+	mu         sync.Mutex
+	byID       map[string]*live
+	bySession  map[string]string // session → running id
+	Timeout    time.Duration     // 0 = no extra deadline
+	MaxRecords int               // 0 = defaultMaxRecords; finished runs beyond this are dropped
 	// OnDone is invoked after a Run reaches a terminal status (optional).
 	OnDone func(Record)
 }
@@ -66,6 +75,7 @@ type Registry struct {
 type live struct {
 	rec    Record
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // NewRegistry returns an empty registry.
@@ -74,6 +84,13 @@ func NewRegistry() *Registry {
 		byID:      map[string]*live{},
 		bySession: map[string]string{},
 	}
+}
+
+func (g *Registry) maxRecords() int {
+	if g.MaxRecords <= 0 {
+		return defaultMaxRecords
+	}
+	return g.MaxRecords
 }
 
 // Start registers a Run. If wait is true it blocks until terminal status.
@@ -90,32 +107,47 @@ func (g *Registry) Start(ctx context.Context, sessionID, input string, wait bool
 	}
 
 	parent := ctx
-	runCtx, cancel := context.WithCancel(parent)
-	if !wait {
-		runCtx, cancel = context.WithCancel(context.Background())
+	var cancel context.CancelFunc
+	var runCtx context.Context
+	if wait {
+		runCtx, cancel = context.WithCancel(parent)
+	} else {
+		// Keep request_id / approval notify; do not cancel when the HTTP handler returns.
+		runCtx, cancel = context.WithCancel(context.WithoutCancel(parent))
+	}
+	if g.Timeout > 0 {
+		var tc context.CancelFunc
+		runCtx, tc = context.WithTimeout(runCtx, g.Timeout)
+		prev := cancel
+		cancel = func() {
+			tc()
+			prev()
+		}
 	}
 
 	id := newID()
+	runCtx = obs.WithRunID(runCtx, id)
 	now := time.Now().UTC()
 	rec := Record{
 		ID:        id,
 		SessionID: sessionID,
+		RequestID: obs.IDFrom(runCtx),
 		Input:     input,
 		Status:    StatusRunning,
 		StartedAt: now,
 	}
 
+	done := make(chan struct{})
 	g.mu.Lock()
 	if existing, ok := g.bySession[sessionID]; ok {
 		g.mu.Unlock()
 		cancel()
 		return Record{}, &ConflictError{SessionID: sessionID, RunID: existing}
 	}
-	g.byID[id] = &live{rec: rec, cancel: cancel}
+	g.byID[id] = &live{rec: rec, cancel: cancel, done: done}
 	g.bySession[sessionID] = id
 	g.mu.Unlock()
 
-	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		out, usage, err := fn(runCtx, rec)
@@ -149,7 +181,7 @@ func (g *Registry) Get(id string) (Record, bool) {
 	return lv.rec, true
 }
 
-// Cancel requests cancellation. Unknown or already-terminal ids error.
+// Cancel requests cancellation and waits until the Run is terminal (or 2s).
 func (g *Registry) Cancel(id string) (Record, error) {
 	g.mu.Lock()
 	lv, ok := g.byID[id]
@@ -159,21 +191,20 @@ func (g *Registry) Cancel(id string) (Record, error) {
 	}
 	st := lv.rec.Status
 	cancel := lv.cancel
+	done := lv.done
+	snap := lv.rec
 	g.mu.Unlock()
 	if st != StatusRunning {
-		return lv.rec, fmt.Errorf("run: already finished (%s)", st)
+		return snap, fmt.Errorf("run: already finished (%s)", st)
 	}
 	if cancel != nil {
 		cancel()
 	}
-	// Wait briefly so Get sees terminal status in tests; caller may still poll.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		got, _ := g.Get(id)
-		if got.Status != StatusRunning {
-			return got, nil
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 	got, _ := g.Get(id)
 	return got, nil
@@ -188,13 +219,16 @@ func (g *Registry) InFlight() int {
 
 func (g *Registry) finish(id, sessionID, out string, usage llm.Usage, err error, runCtx context.Context) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	lv, ok := g.byID[id]
 	if !ok {
+		g.mu.Unlock()
 		return
 	}
 	lv.rec.FinishedAt = time.Now().UTC()
 	lv.rec.Usage = usage
+	if lv.rec.RequestID == "" {
+		lv.rec.RequestID = obs.IDFrom(runCtx)
+	}
 	if runCtx.Err() != nil {
 		lv.rec.Status = StatusCancelled
 		if err != nil {
@@ -205,6 +239,7 @@ func (g *Registry) finish(id, sessionID, out string, usage llm.Usage, err error,
 	} else if err != nil {
 		lv.rec.Status = StatusFailed
 		lv.rec.Err = err.Error()
+		lv.rec.ChatError = isChatErr(err)
 	} else {
 		lv.rec.Status = StatusSucceeded
 		lv.rec.Output = out
@@ -212,13 +247,52 @@ func (g *Registry) finish(id, sessionID, out string, usage llm.Usage, err error,
 	if g.bySession[sessionID] == id {
 		delete(g.bySession, sessionID)
 	}
+	g.evictLocked()
 	done := lv.rec
 	cb := g.OnDone
+	g.mu.Unlock()
 	if cb != nil {
-		g.mu.Unlock()
 		cb(done)
-		g.mu.Lock()
 	}
+}
+
+func (g *Registry) evictLocked() {
+	max := g.maxRecords()
+	type item struct {
+		id string
+		t  time.Time
+	}
+	var finished []item
+	for id, lv := range g.byID {
+		if lv.rec.Status == StatusRunning {
+			continue
+		}
+		t := lv.rec.FinishedAt
+		if t.IsZero() {
+			t = lv.rec.StartedAt
+		}
+		finished = append(finished, item{id: id, t: t})
+	}
+	extra := len(finished) - max
+	if extra <= 0 {
+		return
+	}
+	sort.Slice(finished, func(i, j int) bool { return finished[i].t.Before(finished[j].t) })
+	for i := 0; i < extra; i++ {
+		delete(g.byID, finished[i].id)
+	}
+}
+
+func isChatErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se *llm.StatusError
+	if errors.As(err, &se) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "llm chat") || strings.Contains(s, "llm:")
 }
 
 func newID() string {

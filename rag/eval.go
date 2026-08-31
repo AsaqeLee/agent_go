@@ -21,7 +21,8 @@ type Case struct {
 // Result is per-case outcome.
 type Result struct {
 	ID      string  `json:"id"`
-	Hit     bool    `json:"hit"`
+	Hit     bool    `json:"hit"`  // recall@k: expect_path appears in top-k
+	Top1    bool    `json:"top1"` // first result path matches expect_path
 	Path    string  `json:"path,omitempty"`
 	Snippet string  `json:"snippet,omitempty"`
 	Score   float64 `json:"score,omitempty"`
@@ -30,9 +31,10 @@ type Result struct {
 
 // Report aggregates Evaluate.
 type Report struct {
-	Total int      `json:"total"`
-	Hits  int      `json:"hits"`
-	Items []Result `json:"items"`
+	Total    int      `json:"total"`
+	Hits     int      `json:"hits"`      // recall@k
+	Top1Hits int      `json:"top1_hits"` // precision-at-1 on path
+	Items    []Result `json:"items"`
 }
 
 // LoadCases reads eval JSON (array of Case).
@@ -71,8 +73,12 @@ func Evaluate(ctx context.Context, r retrieve.Retriever, cases []Case, k int) Re
 		want := strings.TrimSpace(c.ExpectPath)
 		pathOK := want == ""
 		substrOK := len(c.ExpectSubstr) == 0
+		if len(hits) > 0 && pathMatches(hits[0].Path, want) {
+			item.Top1 = true
+			rep.Top1Hits++
+		}
 		for _, h := range hits {
-			if want != "" && (h.Path == want || strings.HasSuffix(h.Path, "/"+want) || strings.Contains(h.Path, want)) {
+			if pathMatches(h.Path, want) {
 				pathOK = true
 			}
 			blob := strings.ToLower(h.Text)
@@ -96,7 +102,7 @@ func Evaluate(ctx context.Context, r retrieve.Retriever, cases []Case, k int) Re
 // Format is a one-line + miss list summary.
 func (r Report) Format() string {
 	miss := r.Total - r.Hits
-	s := fmt.Sprintf("hits=%d/%d", r.Hits, r.Total)
+	s := fmt.Sprintf("recall@k=%d/%d top1=%d/%d", r.Hits, r.Total, r.Top1Hits, r.Total)
 	if miss == 0 {
 		return s
 	}
@@ -107,4 +113,11 @@ func (r Report) Format() string {
 		}
 	}
 	return s + " miss=" + strings.Join(ids, ",")
+}
+
+func pathMatches(got, want string) bool {
+	if want == "" {
+		return true
+	}
+	return got == want || strings.HasSuffix(got, "/"+want) || strings.Contains(got, want)
 }

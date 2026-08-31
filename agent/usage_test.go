@@ -114,10 +114,10 @@ func TestFailedRunDoesNotCommitUsage(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	if got := a.SessionUsage(); got != (llm.Usage{}) {
-		t.Fatalf("failed run leaked usage: %+v", got)
+		t.Fatalf("failed run leaked session usage: %+v", got)
 	}
-	if got := a.LastUsage(); got != (llm.Usage{}) {
-		t.Fatalf("failed run leaked last usage: %+v", got)
+	if got := a.LastUsage(); got.TotalTokens != 4 {
+		t.Fatalf("failed run should still expose this attempt's usage, got %+v", got)
 	}
 }
 

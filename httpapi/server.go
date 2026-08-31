@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -20,11 +21,13 @@ import (
 // Deps wires the HTTP surface to the agent runtime.
 type Deps struct {
 	// NewAgent builds a fully configured agent for one session id.
-	NewAgent func(sessionID string) *agent.Agent
-	Park     *Park
-	Runs     *run.Registry
-	Metrics  *obs.Metrics
-	Channel  channel.Channel
+	NewAgent   func(sessionID string) *agent.Agent
+	Park       *Park
+	Runs       *run.Registry
+	Metrics    *obs.Metrics
+	Channel    channel.Channel
+	SessionDir string
+	Ready      func() error
 }
 
 // Handler serves health, metrics, runs, approvals, and IM messages.
@@ -38,7 +41,12 @@ func Handler(d Deps) http.Handler {
 	if d.Runs.OnDone == nil {
 		d.Runs.OnDone = func(rec run.Record) {
 			d.observe(rec)
-			d.emitChannel(context.Background(), rec)
+			ctx := context.Background()
+			if rec.RequestID != "" {
+				ctx, _ = obs.WithID(ctx, rec.RequestID)
+			}
+			ctx = obs.WithRunID(ctx, rec.ID)
+			d.emitChannel(ctx, rec)
 		}
 	}
 	mux := http.NewServeMux()
@@ -68,12 +76,32 @@ func (d Deps) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if d.Metrics != nil && !d.Metrics.StartedAt.IsZero() {
 		uptime = int(time.Since(d.Metrics.StartedAt).Seconds())
 	}
+	ok := true
+	checks := map[string]string{}
+	if d.SessionDir != "" && d.SessionDir != "off" && d.SessionDir != "-" {
+		if err := os.MkdirAll(d.SessionDir, 0o700); err != nil {
+			ok = false
+			checks["session_dir"] = err.Error()
+		}
+	}
+	if d.Ready != nil {
+		if err := d.Ready(); err != nil {
+			ok = false
+			checks["ready"] = err.Error()
+		}
+	}
+	status := http.StatusOK
+	if !ok {
+		status = http.StatusServiceUnavailable
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":         true,
+		"ok":         ok,
 		"in_flight":  inFlight,
 		"uptime_s":   uptime,
 		"request_id": obs.IDFrom(r.Context()),
+		"checks":     checks,
 	})
 }
 
@@ -95,11 +123,23 @@ type runRequest struct {
 
 type runResponse struct {
 	RunID     string    `json:"run_id,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
 	Output    string    `json:"output,omitempty"`
 	SessionID string    `json:"session_id"`
 	Status    string    `json:"status,omitempty"`
 	Usage     llm.Usage `json:"usage"`
 	Error     string    `json:"error,omitempty"`
+}
+
+func resolveHTTPSession(r *http.Request, id string) string {
+	id = strings.TrimSpace(id)
+	if id != "" {
+		return id
+	}
+	if rid := obs.IDFrom(r.Context()); rid != "" {
+		return "s_" + rid
+	}
+	return "s_" + newID()
 }
 
 func waitDefault(req runRequest) bool {
@@ -124,9 +164,7 @@ func (d Deps) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty input", http.StatusBadRequest)
 		return
 	}
-	if req.SessionID == "" {
-		req.SessionID = "default"
-	}
+	req.SessionID = resolveHTTPSession(r, req.SessionID)
 	if req.Stream {
 		d.streamRun(w, r, req)
 		return
@@ -192,7 +230,9 @@ func (d Deps) startAgentRun(ctx context.Context, sessionID, input string, wait b
 			return "", llm.Usage{}, fmt.Errorf("agent factory returned nil")
 		}
 		a.SessionID = sessionID
-		_ = a.RestoreSession(runCtx)
+		if err := a.RestoreSession(runCtx); err != nil {
+			return "", llm.Usage{}, err
+		}
 		if d.Park != nil {
 			a.Approver = d.Park
 		}
@@ -228,7 +268,7 @@ func (d Deps) observe(rec run.Record) {
 		return
 	}
 	d.Metrics.ObserveRun(string(rec.Status))
-	if rec.Status == run.StatusFailed && strings.Contains(rec.Err, "llm") {
+	if rec.ChatError || (rec.Status == run.StatusFailed && strings.Contains(rec.Err, "llm chat")) {
 		d.Metrics.ChatErrors.Add(1)
 	}
 }
@@ -246,12 +286,14 @@ func (d Deps) emitChannel(ctx context.Context, rec run.Record) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	_ = d.Channel.Send(ctx, channel.Message{
+	if err := d.Channel.Send(ctx, channel.Message{
 		Text:      text,
 		RunID:     rec.ID,
 		SessionID: rec.SessionID,
 		Kind:      kind,
-	})
+	}); err != nil && d.Metrics != nil {
+		d.Metrics.ChannelErrors.Add(1)
+	}
 }
 
 func writeTerminal(w http.ResponseWriter, rec run.Record) {
@@ -265,6 +307,7 @@ func writeTerminal(w http.ResponseWriter, rec run.Record) {
 func recordResponse(rec run.Record) runResponse {
 	return runResponse{
 		RunID:     rec.ID,
+		RequestID: rec.RequestID,
 		Output:    rec.Output,
 		SessionID: rec.SessionID,
 		Status:    string(rec.Status),
@@ -287,17 +330,13 @@ func (d Deps) streamRun(w http.ResponseWriter, r *http.Request, req runRequest) 
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 		flusher.Flush()
 	}
+	ctx := r.Context()
 	if d.Park != nil {
-		prev := d.Park.OnAsk
-		d.Park.OnAsk = func(id string, ap tool.Approval) {
+		ctx = WithApprovalNotify(ctx, func(id string, ap tool.Approval) {
 			write("approval", map[string]any{"id": id, "tool": ap.Name, "args": ap.Args})
-			if prev != nil {
-				prev(id, ap)
-			}
-		}
-		defer func() { d.Park.OnAsk = prev }()
+		})
 	}
-	rec, err := d.startAgentRun(r.Context(), req.SessionID, req.Input, true, func(e agent.Event) {
+	rec, err := d.startAgentRun(ctx, req.SessionID, req.Input, true, func(e agent.Event) {
 		switch e.Kind {
 		case agent.EventToken:
 			write("token", map[string]string{"text": e.Token})
@@ -339,9 +378,7 @@ func (d Deps) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty text", http.StatusBadRequest)
 		return
 	}
-	if body.SessionID == "" {
-		body.SessionID = "default"
-	}
+	body.SessionID = resolveHTTPSession(r, body.SessionID)
 	if d.Channel != nil {
 		_ = d.Channel.Send(r.Context(), channel.Message{
 			User: body.User, Text: body.Text, SessionID: body.SessionID, Kind: "user",

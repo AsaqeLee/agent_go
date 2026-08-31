@@ -21,3 +21,5 @@ This runtime is a **single-process** Agent core. The seams are intentional; the 
 4. If `AGENT_OTEL_JSONL` is set, grep that file for `request_id` / `trace_id`.
 
 A cancelled Run is `status=cancelled` (client `POST /v1/runs/{id}/cancel` or parent context done). A 409 means the session still has a running Run — wait or cancel it.
+
+Do not omit `session_id` on HTTP: an empty id is **generated** (`s_<request_id>`), not shared `default`. Reuse the returned `session_id` for multi-turn. Failed runs still report this attempt's token `usage` on `GET /v1/runs/{id}`.

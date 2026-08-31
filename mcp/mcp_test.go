@@ -1,8 +1,13 @@
 package mcp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +55,55 @@ func TestClientListAndCall(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "echo" {
 		t.Fatalf("%+v", tools)
 	}
+	out, err := c.CallTool(ctx, "echo", map[string]any{"text": "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "echo:hi" {
+		t.Fatalf("out=%q", out)
+	}
+}
+
+func TestServeEchoesStringID(t *testing.T) {
+	sr, cw := io.Pipe()
+	cr, sw := io.Pipe()
+	defer sr.Close()
+	defer cw.Close()
+	defer cr.Close()
+	defer sw.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = Serve(ctx, sr, sw, ImplInfo{Name: "echo"}, nil) }()
+
+	req := []byte(`{"jsonrpc":"2.0","id":"abc","method":"ping"}`)
+	if err := writeMsg(cw, json.RawMessage(req)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := readMsg(bufio.NewReader(cr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"id":"abc"`)) && !bytes.Contains(raw, []byte(`"id": "abc"`)) {
+		t.Fatalf("id not echoed: %s", raw)
+	}
+}
+
+func TestDialEchoCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip exec dial in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := filepath.Join(dir, "..", "examples", "mcp-echo")
+	c, err := Dial(ctx, ServerConfig{Name: "echo", Command: "go", Args: []string{"run", echo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
 	out, err := c.CallTool(ctx, "echo", map[string]any{"text": "hi"})
 	if err != nil {
 		t.Fatal(err)

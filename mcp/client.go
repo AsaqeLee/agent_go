@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,7 +25,7 @@ type Client struct {
 	mu      sync.Mutex
 	w       io.Writer
 	nextID  atomic.Int64
-	pending map[int]chan rpcResponse
+	pending map[string]chan rpcResponse
 	closed  atomic.Bool
 }
 
@@ -72,7 +73,7 @@ func newClient(name string, w io.Writer, r io.Reader) *Client {
 	c := &Client{
 		Name:    name,
 		w:       w,
-		pending: map[int]chan rpcResponse{},
+		pending: map[string]chan rpcResponse{},
 	}
 	go c.readLoop(r)
 	return c
@@ -100,14 +101,14 @@ func (c *Client) readLoop(r io.Reader) {
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			continue
 		}
-		if resp.Method != "" && resp.ID == 0 && resp.Result == nil {
-			// notification from server — ignore
+		if resp.Method != "" && len(bytes.TrimSpace(resp.ID)) == 0 {
 			continue
 		}
+		key := idKey(resp.ID)
 		c.mu.Lock()
-		ch, ok := c.pending[resp.ID]
+		ch, ok := c.pending[key]
 		if ok {
-			delete(c.pending, resp.ID)
+			delete(c.pending, key)
 		}
 		c.mu.Unlock()
 		if ok {
@@ -119,32 +120,37 @@ func (c *Client) readLoop(r io.Reader) {
 func (c *Client) failAll(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for id, ch := range c.pending {
-		ch <- rpcResponse{ID: id, Error: &rpcError{Message: err.Error()}}
-		delete(c.pending, id)
+	for key, ch := range c.pending {
+		ch <- rpcResponse{ID: json.RawMessage(key), Error: &rpcError{Message: err.Error()}}
+		delete(c.pending, key)
 	}
+}
+
+func idKey(id json.RawMessage) string {
+	return string(bytes.TrimSpace(id))
 }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.closed.Load() {
 		return nil, fmt.Errorf("mcp: client closed")
 	}
-	id := int(c.nextID.Add(1))
+	rawID, _ := json.Marshal(c.nextID.Add(1))
+	key := idKey(rawID)
 	ch := make(chan rpcResponse, 1)
 	c.mu.Lock()
-	c.pending[id] = ch
-	err := writeMsg(c.w, rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
+	c.pending[key] = ch
+	err := writeMsg(c.w, rpcRequest{JSONRPC: "2.0", ID: rawID, Method: method, Params: params})
 	c.mu.Unlock()
 	if err != nil {
 		c.mu.Lock()
-		delete(c.pending, id)
+		delete(c.pending, key)
 		c.mu.Unlock()
 		return nil, err
 	}
 	select {
 	case <-ctx.Done():
 		c.mu.Lock()
-		delete(c.pending, id)
+		delete(c.pending, key)
 		c.mu.Unlock()
 		return nil, ctx.Err()
 	case resp := <-ch:

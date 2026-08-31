@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -29,6 +30,28 @@ func TestMemorySaveLoad(t *testing.T) {
 	}
 	if m2.Path != path {
 		t.Fatalf("path=%q", m2.Path)
+	}
+}
+
+func TestConcurrentLoadSaveSamePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mem.json")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(n int) {
+			defer wg.Done()
+			m := &Memory{Path: path}
+			_, _ = m.SetField("note", "n")
+			_ = n
+		}(i)
+		go func() {
+			defer wg.Done()
+			_, _ = LoadMemory(path)
+		}()
+	}
+	wg.Wait()
+	if _, err := LoadMemory(path); err != nil {
+		t.Fatal(err)
 	}
 }
 
