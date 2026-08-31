@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -9,12 +10,23 @@ import (
 	"github.com/asaqelee/agent_go/tool"
 )
 
+func TestParkExpires(t *testing.T) {
+	old := approvalTTL
+	approvalTTL = 20 * time.Millisecond
+	defer func() { approvalTTL = old }()
+	p := NewPark()
+	ok, err := p.Approve(context.Background(), tool.Approval{Name: "rm"})
+	if ok || err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+}
+
 func TestParkNotifyIsPerContext(t *testing.T) {
 	p := NewPark()
 	var mu sync.Mutex
 	got := map[string]int{}
-	notify := func(key string) func(id string, req tool.Approval) {
-		return func(id string, req tool.Approval) {
+	notify := func(key string) func(id, runID string, req tool.Approval) {
+		return func(id, runID string, req tool.Approval) {
 			mu.Lock()
 			got[key]++
 			mu.Unlock()

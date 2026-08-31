@@ -90,21 +90,28 @@ func (f *File) Load(_ context.Context, id string) ([]llm.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	unlock := lockPath(path)
+	defer unlock()
+	var msgs []llm.Message
+	err = withFileLock(path, func() error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		}
-		return nil, err
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil, nil
-	}
-	var doc fileDoc
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("session load: %w", err)
-	}
-	return doc.Messages, nil
+		if len(strings.TrimSpace(string(data))) == 0 {
+			return nil
+		}
+		var doc fileDoc
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("session load: %w", err)
+		}
+		msgs = doc.Messages
+		return nil
+	})
+	return msgs, err
 }
 
 func (f *File) Save(_ context.Context, id string, msgs []llm.Message) error {
@@ -123,7 +130,11 @@ func (f *File) Save(_ context.Context, id string, msgs []llm.Message) error {
 		return err
 	}
 	data = append(data, '\n')
-	return atomicWrite(path, data, 0o600)
+	unlock := lockPath(path)
+	defer unlock()
+	return withFileLock(path, func() error {
+		return atomicWrite(path, data, 0o600)
+	})
 }
 
 func (f *File) Delete(_ context.Context, id string) error {
@@ -131,11 +142,15 @@ func (f *File) Delete(_ context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	err = os.Remove(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	unlock := lockPath(path)
+	defer unlock()
+	return withFileLock(path, func() error {
+		err := os.Remove(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 }
 
 func (f *File) path(id string) (string, error) {

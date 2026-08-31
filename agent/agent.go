@@ -76,6 +76,8 @@ type Agent struct {
 	// Tracer records run / chat / tool spans. Nil is a no-op.
 	Tracer obs.Tracer
 
+	runMu sync.Mutex
+
 	// history is short-term memory across Run calls (system + user/assistant/tool turns).
 	// Only updated when a Run finishes successfully.
 	history []llm.Message
@@ -98,6 +100,10 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	if strings.TrimSpace(userInput) == "" {
 		return "", fmt.Errorf("agent: empty input")
 	}
+	if !a.runMu.TryLock() {
+		return "", fmt.Errorf("agent: run already in progress")
+	}
+	defer a.runMu.Unlock()
 
 	ctx, endRun := a.startSpan(ctx, "agent.run")
 	defer endRun()
@@ -134,6 +140,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		messages = upsertProfile(messages, a.Memory)
 
 		resp, err := a.chat(ctx, messages, toolDefs)
+		runUsage = runUsage.Add(normalizeUsage(resp.Usage))
 		if err != nil {
 			a.recordAttemptUsage(runUsage, false)
 			a.emit(Event{Kind: EventError, Err: err.Error()})
@@ -143,7 +150,6 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 		assistant := resp.Message
 		messages = append(messages, assistant)
-		runUsage = runUsage.Add(normalizeUsage(resp.Usage))
 
 		// Case A: no tools → done; commit history, then optional fold + session trim.
 		if len(assistant.ToolCalls) == 0 {

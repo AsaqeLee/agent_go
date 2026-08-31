@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/tool"
 )
 
@@ -57,16 +56,31 @@ func (r *Roster) run(ctx context.Context, name, goal string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("handoff: unknown agent %q (have %s)", name, strings.Join(r.names(), ", "))
 	}
-	child := *r.parent
-	child.history = nil
-	child.lastUsage = llm.Usage{}
-	child.sessionUsage = llm.Usage{}
-	child.Sessions = nil
-	child.SessionID = ""
+	p := r.parent
+	child := Agent{
+		Provider:             p.Provider,
+		Tools:                filterTools(p.Tools, spec.Tools),
+		SystemPrompt:         p.SystemPrompt,
+		MaxTurns:             p.MaxTurns,
+		MaxToolResultChars:   p.MaxToolResultChars,
+		MaxHistoryMessages:   p.MaxHistoryMessages,
+		KeepRecentFullTurns:  p.KeepRecentFullTurns,
+		DisableLLMSummary:    p.DisableLLMSummary,
+		SummaryMinDraftRunes: p.SummaryMinDraftRunes,
+		Memory:               p.Memory,
+		Verbose:              p.Verbose,
+		Log:                  p.Log,
+		OnEvent:              p.OnEvent,
+		Stream:               p.Stream,
+		ToolTimeout:          p.ToolTimeout,
+		MaxToolConcurrency:   p.MaxToolConcurrency,
+		Approver:             p.Approver,
+		Redact:               p.Redact,
+		Tracer:               p.Tracer,
+	}
 	if spec.Prompt != "" {
 		child.SystemPrompt = spec.Prompt
 	}
-	child.Tools = filterTools(r.parent.Tools, spec.Tools)
 	if ctx == nil {
 		ctx = context.Background()
 	}

@@ -58,3 +58,15 @@ func compactArgs(s string) string {
 type allowAll struct{}
 
 func (allowAll) Approve(context.Context, tool.Approval) (bool, error) { return true, nil }
+
+type denyAll struct{}
+
+func (denyAll) Approve(context.Context, tool.Approval) (bool, error) { return false, nil }
+
+// workerApprover must not read stdin (task workers share the process with the REPL).
+func workerApprover() tool.Approver {
+	if envBool("AGENT_MCP_AUTO_APPROVE", false) {
+		return allowAll{}
+	}
+	return denyAll{}
+}

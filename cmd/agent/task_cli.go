@@ -108,6 +108,7 @@ func newTaskManager(parent context.Context) (*task.Manager, func()) {
 		docs := resolveDocsRoot()
 		a := newSyncAgent(provider, m, docs, extra)
 		attachRoster(a, docs)
+		a.Approver = workerApprover()
 		a.Verbose = envBool("AGENT_VERBOSE", false)
 		return a.Run(ctx, goal)
 	}

@@ -249,6 +249,56 @@ func TestMetricsAndRequestID(t *testing.T) {
 	}
 }
 
+type failCh struct{}
+
+func (failCh) Send(context.Context, channel.Message) error { return errDown }
+func (failCh) Transcript() []channel.Message               { return nil }
+
+var errDown = errString("down")
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+func TestChannelErrorRecordedOnRun(t *testing.T) {
+	h := Handler(Deps{
+		Channel: failCh{},
+		NewAgent: func(string) *agent.Agent {
+			return &agent.Agent{
+				Provider: &scripted{responses: []llm.Response{
+					{Message: llm.Message{Role: llm.RoleAssistant, Content: "pong"}},
+				}},
+				MaxTurns: 2,
+			}
+		},
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Post(srv.URL+"/v1/runs", "application/json", bytes.NewReader([]byte(`{"input":"ping","session_id":"c1"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var got runResponse
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "succeeded" || got.Output != "pong" {
+		t.Fatalf("%+v", got)
+	}
+	// OnDone annotates after Start returns the snapshot; GET sees channel_error.
+	gres, err := http.Get(srv.URL + "/v1/runs/" + got.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gres.Body.Close()
+	var stored runResponse
+	_ = json.NewDecoder(gres.Body).Decode(&stored)
+	if stored.ChannelError == "" {
+		t.Fatalf("expected channel_error on stored run: %+v", stored)
+	}
+}
+
 func TestMessagesUsesChannel(t *testing.T) {
 	ch := &channel.Memory{}
 	h := Handler(Deps{
@@ -279,6 +329,49 @@ func TestMessagesUsesChannel(t *testing.T) {
 	tr := ch.Transcript()
 	if len(tr) < 2 {
 		t.Fatalf("transcript=%+v", tr)
+	}
+}
+
+func TestHTTPTokenRequired(t *testing.T) {
+	h := Handler(Deps{
+		Token: "secret",
+		NewAgent: func(string) *agent.Agent {
+			return &agent.Agent{
+				Provider: &scripted{responses: []llm.Response{
+					{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}},
+				}},
+				MaxTurns: 2,
+			}
+		},
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Post(srv.URL+"/v1/runs", "application/json", bytes.NewReader([]byte(`{"input":"hi"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d", res.StatusCode)
+	}
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/runs", bytes.NewReader([]byte(`{"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "secret")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("status=%d", res.StatusCode)
+	}
+	hz, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hz.Body.Close()
+	if hz.StatusCode != 200 {
+		t.Fatalf("healthz=%d", hz.StatusCode)
 	}
 }
 

@@ -9,6 +9,22 @@ import (
 	"github.com/asaqelee/agent_go/llm"
 )
 
+func TestEmptySessionIsNotDefault(t *testing.T) {
+	g := NewRegistry()
+	rec, err := g.Start(context.Background(), "", "hi", true, func(ctx context.Context, rec Record) (string, llm.Usage, error) {
+		if rec.SessionID == "" || rec.SessionID == "default" {
+			t.Errorf("session=%q", rec.SessionID)
+		}
+		return "ok", llm.Usage{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SessionID == "" || rec.SessionID == "default" {
+		t.Fatalf("%+v", rec)
+	}
+}
+
 func TestStartWaitSucceeds(t *testing.T) {
 	g := NewRegistry()
 	rec, err := g.Start(context.Background(), "s1", "hi", true, func(ctx context.Context, rec Record) (string, llm.Usage, error) {

@@ -17,10 +17,11 @@ import (
 type Client struct {
 	Name string
 
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	stderr io.ReadCloser
+	cmd        *exec.Cmd
+	procCancel context.CancelFunc
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	stderr     io.ReadCloser
 
 	mu      sync.Mutex
 	w       io.Writer
@@ -37,27 +38,35 @@ func Dial(ctx context.Context, cfg ServerConfig) (*Client, error) {
 	if cfg.Name == "" {
 		cfg.Name = "mcp"
 	}
-	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
+	// Process lifetime is independent of Initialize's ctx so a short Dial
+	// timeout cannot kill the server after handshake.
+	procCtx, procCancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(procCtx, cfg.Command, cfg.Args...)
 	if len(cfg.Env) > 0 {
 		cmd.Env = append(os.Environ(), cfg.Env...)
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		procCancel()
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		procCancel()
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		procCancel()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		procCancel()
 		return nil, fmt.Errorf("mcp: start %s: %w", cfg.Command, err)
 	}
 	c := newClient(cfg.Name, stdin, stdout)
 	c.cmd = cmd
+	c.procCancel = procCancel
 	c.stdin = stdin
 	c.stdout = stdout
 	c.stderr = stderr
@@ -228,6 +237,9 @@ func (c *Client) Close() error {
 	}
 	if c.stdin != nil {
 		_ = c.stdin.Close()
+	}
+	if c.procCancel != nil {
+		c.procCancel()
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()

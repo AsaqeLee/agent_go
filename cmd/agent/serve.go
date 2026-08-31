@@ -52,6 +52,7 @@ func runServeCLI(ctx context.Context, args []string) int {
 		Metrics:    obs.NewMetrics(),
 		Channel:    ch,
 		SessionDir: sessDir,
+		Token:      env("AGENT_HTTP_TOKEN", ""),
 		NewAgent: func(sessionID string) *agent.Agent {
 			a := newSyncAgent(provider, mem, docsRoot, mcpTools)
 			attachRoster(a, docsRoot)

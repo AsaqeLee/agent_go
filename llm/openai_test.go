@@ -68,6 +68,26 @@ func TestChatParsesUsage(t *testing.T) {
 	}
 }
 
+func TestChatErrorIncludesUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{
+			"error":{"message":"busy"},
+			"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9}
+		}`)
+	}))
+	defer srv.Close()
+	p := NewOpenAI(srv.URL, "", "m")
+	p.MaxRetries = -1
+	resp, err := p.Chat(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: "x"}}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if resp.Usage.PromptTokens != 9 || resp.Usage.TotalTokens != 9 {
+		t.Fatalf("usage=%+v", resp.Usage)
+	}
+}
+
 func TestChatAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

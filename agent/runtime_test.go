@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asaqelee/agent_go/llm"
 	"github.com/asaqelee/agent_go/session"
@@ -26,6 +27,42 @@ func (s *streamScript) ChatStream(ctx context.Context, req llm.Request, onDelta 
 		}
 	}
 	return resp, nil
+}
+
+func TestConcurrentRunRejected(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	p := &scriptedProvider{
+		onChat: func(req llm.Request, callIndex int) {
+			if callIndex == 0 {
+				close(started)
+				<-release
+			}
+		},
+		responses: []llm.Response{
+			{Message: llm.Message{Role: llm.RoleAssistant, Content: "a"}},
+			{Message: llm.Message{Role: llm.RoleAssistant, Content: "b"}},
+		},
+	}
+	a := &Agent{Provider: p, MaxTurns: 2}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := a.Run(context.Background(), "one")
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+	_, err := a.Run(context.Background(), "two")
+	if err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("err=%v", err)
+	}
+	close(release)
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRestoreSessionRoundTrip(t *testing.T) {

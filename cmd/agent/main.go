@@ -99,6 +99,7 @@ func main() {
 		}
 		ag := newSyncAgent(provider, mem2, docsRoot, mcpTools)
 		attachRoster(ag, docsRoot)
+		ag.Approver = workerApprover()
 		ag.Verbose = envBool("AGENT_VERBOSE", false)
 		return ag.Run(taskCtx, goal)
 	}, task.Options{

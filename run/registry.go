@@ -38,6 +38,7 @@ type Record struct {
 	Err        string    `json:"error,omitempty"`
 	Status     Status    `json:"status"`
 	ChatError  bool      `json:"chat_error,omitempty"`
+	ChannelErr string    `json:"channel_error,omitempty"`
 	Usage      llm.Usage `json:"usage"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
@@ -99,8 +100,8 @@ func (g *Registry) Start(ctx context.Context, sessionID, input string, wait bool
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if sessionID == "" {
-		sessionID = "default"
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = "s_" + strings.TrimPrefix(newID(), "r_")
 	}
 	if fn == nil {
 		return Record{}, fmt.Errorf("run: nil runner")
@@ -208,6 +209,20 @@ func (g *Registry) Cancel(id string) (Record, error) {
 	}
 	got, _ := g.Get(id)
 	return got, nil
+}
+
+// Annotate mutates a stored record (e.g. channel delivery failure after success).
+func (g *Registry) Annotate(id string, fn func(*Record)) {
+	if g == nil || fn == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	lv, ok := g.byID[id]
+	if !ok {
+		return
+	}
+	fn(&lv.rec)
 }
 
 // InFlight is the number of runs in StatusRunning.

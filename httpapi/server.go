@@ -28,6 +28,8 @@ type Deps struct {
 	Channel    channel.Channel
 	SessionDir string
 	Ready      func() error
+	// Token if set requires Bearer or X-Agent-Token on /v1/* and /metrics.
+	Token string
 }
 
 // Handler serves health, metrics, runs, approvals, and IM messages.
@@ -56,7 +58,32 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("/v1/runs/", d.handleRunItem)
 	mux.HandleFunc("/v1/approvals/", d.handleApprovals)
 	mux.HandleFunc("/v1/messages", d.handleMessages)
-	return withRequestID(mux)
+	h := withRequestID(mux)
+	if d.Token != "" {
+		h = withToken(h, d.Token)
+	}
+	return h
+}
+
+func withToken(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := strings.TrimSpace(r.Header.Get("X-Agent-Token"))
+		if got == "" {
+			al := r.Header.Get("Authorization")
+			if strings.HasPrefix(strings.ToLower(al), "bearer ") {
+				got = strings.TrimSpace(al[7:])
+			}
+		}
+		if got != token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func withRequestID(next http.Handler) http.Handler {
@@ -122,13 +149,14 @@ type runRequest struct {
 }
 
 type runResponse struct {
-	RunID     string    `json:"run_id,omitempty"`
-	RequestID string    `json:"request_id,omitempty"`
-	Output    string    `json:"output,omitempty"`
-	SessionID string    `json:"session_id"`
-	Status    string    `json:"status,omitempty"`
-	Usage     llm.Usage `json:"usage"`
-	Error     string    `json:"error,omitempty"`
+	RunID        string    `json:"run_id,omitempty"`
+	RequestID    string    `json:"request_id,omitempty"`
+	Output       string    `json:"output,omitempty"`
+	SessionID    string    `json:"session_id"`
+	Status       string    `json:"status,omitempty"`
+	Usage        llm.Usage `json:"usage"`
+	Error        string    `json:"error,omitempty"`
+	ChannelError string    `json:"channel_error,omitempty"`
 }
 
 func resolveHTTPSession(r *http.Request, id string) string {
@@ -291,8 +319,15 @@ func (d Deps) emitChannel(ctx context.Context, rec run.Record) {
 		RunID:     rec.ID,
 		SessionID: rec.SessionID,
 		Kind:      kind,
-	}); err != nil && d.Metrics != nil {
-		d.Metrics.ChannelErrors.Add(1)
+	}); err != nil {
+		if d.Metrics != nil {
+			d.Metrics.ChannelErrors.Add(1)
+		}
+		if d.Runs != nil {
+			d.Runs.Annotate(rec.ID, func(r *run.Record) {
+				r.ChannelErr = err.Error()
+			})
+		}
 	}
 }
 
@@ -306,13 +341,14 @@ func writeTerminal(w http.ResponseWriter, rec run.Record) {
 
 func recordResponse(rec run.Record) runResponse {
 	return runResponse{
-		RunID:     rec.ID,
-		RequestID: rec.RequestID,
-		Output:    rec.Output,
-		SessionID: rec.SessionID,
-		Status:    string(rec.Status),
-		Usage:     rec.Usage,
-		Error:     rec.Err,
+		RunID:        rec.ID,
+		RequestID:    rec.RequestID,
+		Output:       rec.Output,
+		SessionID:    rec.SessionID,
+		Status:       string(rec.Status),
+		Usage:        rec.Usage,
+		Error:        rec.Err,
+		ChannelError: rec.ChannelErr,
 	}
 }
 
@@ -332,8 +368,8 @@ func (d Deps) streamRun(w http.ResponseWriter, r *http.Request, req runRequest) 
 	}
 	ctx := r.Context()
 	if d.Park != nil {
-		ctx = WithApprovalNotify(ctx, func(id string, ap tool.Approval) {
-			write("approval", map[string]any{"id": id, "tool": ap.Name, "args": ap.Args})
+		ctx = WithApprovalNotify(ctx, func(id, runID string, ap tool.Approval) {
+			write("approval", map[string]any{"id": id, "run_id": runID, "tool": ap.Name, "args": ap.Args})
 		})
 	}
 	rec, err := d.startAgentRun(ctx, req.SessionID, req.Input, true, func(e agent.Event) {

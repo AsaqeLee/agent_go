@@ -90,6 +90,7 @@ func (o *OpenAI) Chat(ctx context.Context, req Request) (Response, error) {
 
 	attempts := 1 + o.retryBudget()
 	var lastErr error
+	var lastResp Response
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			if lastErr != nil {
@@ -102,18 +103,19 @@ func (o *OpenAI) Chat(ctx context.Context, req Request) (Response, error) {
 			return resp, nil
 		}
 		lastErr = err
+		lastResp = resp
 		if !retryable || attempt == attempts-1 {
-			return Response{}, err
+			return lastResp, err
 		}
 		if err := ctx.Err(); err != nil {
-			return Response{}, fmt.Errorf("llm: %w", err)
+			return lastResp, fmt.Errorf("llm: %w", err)
 		}
 		o.sleep(backoff(attempt))
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("llm: exhausted retries")
 	}
-	return Response{}, lastErr
+	return lastResp, lastErr
 }
 
 func (o *OpenAI) retryBudget() int {
@@ -171,7 +173,10 @@ func (o *OpenAI) doChat(ctx context.Context, body []byte) (Response, bool, error
 	}
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return Response{}, isRetryableStatus(httpResp.StatusCode), httpStatusError(httpResp.StatusCode, raw)
+		var parsed chatCompletionsResponse
+		_ = json.Unmarshal(raw, &parsed)
+		u := usageFrom(&parsed)
+		return Response{Usage: u}, isRetryableStatus(httpResp.StatusCode), httpStatusError(httpResp.StatusCode, raw)
 	}
 
 	var parsed chatCompletionsResponse
@@ -179,10 +184,10 @@ func (o *OpenAI) doChat(ctx context.Context, body []byte) (Response, bool, error
 		return Response{}, false, fmt.Errorf("llm: unmarshal: %w\nbody: %s", err, truncate(string(raw), 500))
 	}
 	if parsed.Error != nil && parsed.Error.Message != "" {
-		return Response{}, false, fmt.Errorf("llm: api error: %s", parsed.Error.Message)
+		return Response{Usage: usageFrom(&parsed)}, false, fmt.Errorf("llm: api error: %s", parsed.Error.Message)
 	}
 	if len(parsed.Choices) == 0 {
-		return Response{}, false, fmt.Errorf("llm: empty choices")
+		return Response{Usage: usageFrom(&parsed)}, false, fmt.Errorf("llm: empty choices")
 	}
 
 	msg := parsed.Choices[0].Message
@@ -191,19 +196,23 @@ func (o *OpenAI) doChat(ctx context.Context, body []byte) (Response, bool, error
 			msg.ToolCalls[i].Type = "function"
 		}
 	}
-	usage := Usage{}
-	if parsed.Usage != nil {
-		usage = Usage{
-			PromptTokens:     parsed.Usage.PromptTokens,
-			CompletionTokens: parsed.Usage.CompletionTokens,
-			TotalTokens:      parsed.Usage.TotalTokens,
-			Calls:            1,
-		}
-		if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
+	return Response{Message: msg, Usage: usageFrom(&parsed)}, false, nil
+}
+
+func usageFrom(parsed *chatCompletionsResponse) Usage {
+	if parsed == nil || parsed.Usage == nil {
+		return Usage{}
 	}
-	return Response{Message: msg, Usage: usage}, false, nil
+	u := Usage{
+		PromptTokens:     parsed.Usage.PromptTokens,
+		CompletionTokens: parsed.Usage.CompletionTokens,
+		TotalTokens:      parsed.Usage.TotalTokens,
+		Calls:            1,
+	}
+	if u.TotalTokens == 0 && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
 }
 
 func httpStatusError(code int, raw []byte) error {

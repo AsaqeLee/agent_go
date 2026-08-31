@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/asaqelee/agent_go/llm"
@@ -57,6 +58,25 @@ func TestFileRoundTripAndMissing(t *testing.T) {
 	if err != nil || got != nil {
 		t.Fatalf("after delete: %v %+v", err, got)
 	}
+}
+
+func TestFileConcurrentSaveLoad(t *testing.T) {
+	dir := t.TempDir()
+	st := &File{Dir: dir}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(n int) {
+			defer wg.Done()
+			_ = st.Save(context.Background(), "s1", []llm.Message{{Role: llm.RoleUser, Content: "x"}})
+			_ = n
+		}(i)
+		go func() {
+			defer wg.Done()
+			_, _ = st.Load(context.Background(), "s1")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestFileRejectsPathID(t *testing.T) {
