@@ -155,4 +155,8 @@ Suggested source reading order: `llm/types.go` → `tool/tool.go` → `agent/age
 
 ## Status / limitations
 
-Educational / experimental runtime. Deliberately **not** multi-instance HA, full IM platform integration, or Kafka. Single-process implementations prove the seams; production boundaries and troubleshooting notes live in [`docs/PRODUCTION.md`](docs/PRODUCTION.md). No root LICENSE file is present at the time of this rewrite.
+Educational / experimental runtime. Deliberately **not** multi-instance HA, full IM platform integration, or Kafka. Single-process implementations prove the seams; production boundaries and troubleshooting notes live in [`docs/PRODUCTION.md`](docs/PRODUCTION.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
