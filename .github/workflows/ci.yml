@@ -27,5 +27,11 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Race test
+        run: go test -race ./...
+
+      - name: Build all packages
+        run: go build ./...
+
       - name: Build
         run: go build -o /tmp/agent ./cmd/agent
