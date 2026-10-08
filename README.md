@@ -1,6 +1,11 @@
 # agent_go
 
+English | [简体中文](README.zh-CN.md)
+
 [![CI](https://github.com/AsaqeLee/agent_go/actions/workflows/ci.yml/badge.svg)](https://github.com/AsaqeLee/agent_go/actions/workflows/ci.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/AsaqeLee/agent_go)](go.mod)
+[![License: MIT](https://img.shields.io/github/license/AsaqeLee/agent_go)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/AsaqeLee/agent_go)](https://github.com/AsaqeLee/agent_go/commits/main)
 
 Pure Go **standard-library** AI agent runtime: readable, runnable, and embeddable. The core loop is intentional teaching material; RAG, MCP, HTTP, tracing, and handoff attach as adapters at existing seams—they do not live inside the loop.
 
@@ -8,6 +13,19 @@ Pure Go **standard-library** AI agent runtime: readable, runnable, and embeddabl
 > RAG / MCP / HTTP / task persistence are adapters.
 
 Module path: `github.com/asaqelee/agent_go` (clone from `AsaqeLee/agent_go`).
+
+## Table of contents
+
+- [Features / scope](#features--scope)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [HTTP API](#http-api)
+- [Library usage](#library-usage)
+- [Project layout](#project-layout)
+- [Development](#development)
+- [Status / limitations](#status--limitations)
+- [License](#license)
 
 ## Features / scope
 
@@ -33,12 +51,60 @@ Module path: `github.com/asaqelee/agent_go` (clone from `AsaqeLee/agent_go`).
 | Zero third-party deps | `net/http` + stdlib only |
 | Parallel tools | Same-turn fan-out/join with ordered write-back |
 
+## Architecture
+
+How `cmd/agent` wires the packages together (one-shot / REPL, `agent serve`, and the `task`, `index`, `eval`, `workflow` subcommands):
+
+```mermaid
+flowchart TB
+  subgraph CMD["cmd/agent"]
+    CLI["one-shot question and interactive REPL"]
+    SERVE["agent serve"]
+    TASKCLI["agent task"]
+    IDX["agent index and agent eval"]
+    WFCLI["agent workflow"]
+  end
+
+  SERVE --> HTTP["httpapi: /v1/runs, /v1/messages, /v1/approvals, /healthz, /metrics"]
+  HTTP --> RUN["run.Registry: run ids, per-session lock, cancel, timeout"]
+  HTTP -.-> PARK["httpapi.Park: pending tool approvals"]
+  HTTP --> CH["channel: in-memory or webhook"]
+  RUN --> AG
+  CLI --> AG
+  CLI --> TASK
+  TASKCLI --> TASK["task.Manager: queue, workers, optional JSON store"]
+  TASK --> AG
+
+  AG["agent.Agent loop: LLM, tool_calls, execute, append, repeat up to MaxTurns"]
+  AG --> LLM["llm.OpenAI: chat, SSE streaming, embeddings, retries, model router"]
+  AG --> TOOLS["tool registry: builtins, profile memory, KB docs, repo, handoff"]
+  AG --> SESS["session.File: JSON transcripts per session id"]
+  AG --> MEM["agent.Memory: name, likes, notes profile"]
+  AG -.-> OBS["obs: request id, JSONL spans, metrics"]
+  AG -.-> PARK
+
+  TOOLS --> RET["retrieve.Retriever: grep by default"]
+  RET -->|"AGENT_RETRIEVER=vector"| VEC["rag.Vector: JSON cosine index"]
+  TOOLS --> MCP["mcp stdio client: server__tool, allowlist, approval for writes"]
+  IDX --> RAGPKG["rag: chunking, index build, eval"]
+  WFCLI --> WF["workflow: retrieve, answer, emit"]
+  WF --> RET
+  WF -->|"answer step"| AG
+  WF --> CH
+
+  LLM --> API[("OpenAI-compatible API: OpenAI, Ollama, DeepSeek")]
+  VEC -.->|"embeddings"| LLM
+  RAGPKG -.->|"embeddings"| LLM
+```
+
+The loop itself stays small; RAG, MCP, HTTP, tracing, and handoff attach through the `Retriever`, `Tool`, `OnEvent`, and `session.Store` seams. Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## Requirements
 
 - Go 1.22+
 - An OpenAI-compatible API key (or local Ollama with function-calling support)
 
-## Getting started
+## Quick start
 
 ```bash
 git clone https://github.com/AsaqeLee/agent_go.git
@@ -90,7 +156,52 @@ go run ./cmd/agent "Compute 12 * 34"
 | `AGENT_MCP_CONFIG` | `mcp.json` if present | MCP servers |
 | `AGENT_CONFIG` | `agent.json` if present | Plugin catalog |
 
-See the previous Chinese README history and `.env.example` for the full list.
+See [`.env.example`](.env.example) for the full list.
+
+## HTTP API
+
+`agent serve` exposes the runtime over HTTP (routes from [`httpapi/server.go`](httpapi/server.go)):
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/healthz` | Liveness plus session-dir check (never requires a token) |
+| `GET` | `/metrics` | Plain-text counters (`agent_runs_started`, `agent_runs_succeeded`, ...) |
+| `POST` | `/v1/runs` | Start a run: `{"input", "session_id", "stream", "wait"}` |
+| `GET` | `/v1/runs/{id}` | Run status and output |
+| `POST` | `/v1/runs/{id}/cancel` | Cancel a running run |
+| `POST` | `/v1/approvals/{id}` | Approve or deny a parked write tool: `{"allow": true}` |
+| `POST` | `/v1/messages` | IM-style entry: `{"text", "session_id", "user"}`; the reply is also sent to the channel |
+
+When `AGENT_HTTP_TOKEN` is set, every route except `/healthz` requires `Authorization: Bearer <token>` or `X-Agent-Token: <token>`.
+
+```bash
+export OPENAI_API_KEY=sk-...          # or use the Ollama settings above
+go run ./cmd/agent serve --addr :8080
+
+# in another terminal
+curl -s http://127.0.0.1:8080/healthz
+# {"checks":{},"in_flight":0,"ok":true,"request_id":"8ad536f387abcd7a","uptime_s":2}
+
+# synchronous run (wait defaults to true)
+curl -s -X POST http://127.0.0.1:8080/v1/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"What time is it? Use a tool.","session_id":"demo"}'
+# {"run_id":"r_...","request_id":"...","output":"...","session_id":"demo","status":"succeeded",
+#  "usage":{"PromptTokens":...,"CompletionTokens":...,"TotalTokens":...,"Calls":...}}
+
+# asynchronous run: 202 with status "running", then poll
+curl -s -X POST http://127.0.0.1:8080/v1/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Summarize the leave policy.","wait":false}'
+curl -s http://127.0.0.1:8080/v1/runs/<run_id>
+
+# Server-Sent Events: tool_start / tool_end / approval / error events, then a final "done" event
+curl -N -s -X POST http://127.0.0.1:8080/v1/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Compute 12 * 34","stream":true}'
+```
+
+A second run on a session that is already busy returns `409 Conflict`; a failed run returns `502` with the error in the `error` field.
 
 ## Library usage
 
@@ -138,6 +249,11 @@ mcp/        # stdio MCP client
 session/    # session store
 task/       # async tasks
 httpapi/    # HTTP API
+run/        # run registry (ids, per-session lock, cancel)
+obs/        # request ids, JSONL spans, metrics
+channel/    # IM message entry / exit (memory, webhook)
+plugin/     # agent.json catalog
+workflow/   # fixed retrieve → answer → emit DAG
 cmd/agent/  # CLI
 examples/
 docs/
@@ -147,9 +263,12 @@ docs/
 
 ```bash
 go test ./...
+go test -race ./...   # also run in CI
 go vet ./...
 go build -o bin/agent ./cmd/agent
 ```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs vet, tests, race-enabled tests, and builds on Go 1.22, 1.23, and 1.24.
 
 Suggested source reading order: `llm/types.go` → `tool/tool.go` → `agent/agent.go` → MCP/RAG adapters → `httpapi` → `cmd/agent`. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/LEARNING.md`](docs/LEARNING.md).
 
